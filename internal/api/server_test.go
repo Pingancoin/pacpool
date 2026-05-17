@@ -23,6 +23,10 @@ func (fakePACD) NetworkInfo(context.Context) (upstream.NetworkInfo, error) {
 	return upstream.NetworkInfo{Network: "simnet", BestHeight: 20, BestBlockHash: "best"}, nil
 }
 
+func (fakePACD) BlockTemplate(context.Context, string) (upstream.BlockTemplate, error) {
+	return upstream.BlockTemplate{Height: 21, PreviousBlockHash: "best", TransactionIDs: []string{"tx1"}}, nil
+}
+
 type fakePACData struct{}
 
 func (fakePACData) Status(context.Context) (upstream.IndexStatus, error) {
@@ -30,7 +34,7 @@ func (fakePACData) Status(context.Context) (upstream.IndexStatus, error) {
 }
 
 func TestServerStatusAndHealth(t *testing.T) {
-	svc := service.New(fakePACD{}, fakePACData{}, time.Second, 500)
+	svc := service.New(fakePACD{}, fakePACData{}, time.Second, 500, "SminingAddr")
 	svc.Refresh(context.Background())
 
 	server := httptest.NewServer(api.New(svc).Handler())

@@ -1,7 +1,9 @@
 package upstream
 
 import (
+	"bytes"
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -42,6 +44,28 @@ type NetworkInfo struct {
 	TargetSpacingSec int64  `json:"targetspacingsec"`
 }
 
+type BlockTemplate struct {
+	Network           string   `json:"network"`
+	Height            uint32   `json:"height"`
+	PreviousBlockHash string   `json:"previousblockhash"`
+	Bits              string   `json:"bits"`
+	Difficulty        string   `json:"difficulty"`
+	Timestamp         int64    `json:"timestamp"`
+	TargetSpacingSec  int64    `json:"targetspacingsec"`
+	MempoolSize       int      `json:"mempoolsize"`
+	TotalFees         int64    `json:"totalfees"`
+	CoinbaseTxID      string   `json:"coinbasetxid"`
+	TransactionIDs    []string `json:"transactionids"`
+	HeaderHex         string   `json:"headerhex"`
+	BlockHex          string   `json:"blockhex"`
+	Mutable           []string `json:"mutable"`
+	NextSubsidy       struct {
+		Miner   int64 `json:"miner"`
+		Project int64 `json:"project"`
+		Total   int64 `json:"total"`
+	} `json:"nextsubsidy"`
+}
+
 func NewPACD(baseURL string) *PACDClient {
 	return &PACDClient{
 		baseURL: strings.TrimRight(baseURL, "/"),
@@ -61,6 +85,63 @@ func (c *PACDClient) NetworkInfo(ctx context.Context) (NetworkInfo, error) {
 	var result NetworkInfo
 	err := c.get(ctx, "/getnetworkinfo", &result)
 	return result, err
+}
+
+func (c *PACDClient) BlockTemplate(ctx context.Context, address string) (BlockTemplate, error) {
+	var result BlockTemplate
+	body, err := json.Marshal(map[string]string{"address": address})
+	if err != nil {
+		return result, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/getblocktemplate", bytes.NewReader(body))
+	if err != nil {
+		return result, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return result, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return result, fmt.Errorf("pacd /getblocktemplate returned %s", resp.Status)
+	}
+	err = json.NewDecoder(resp.Body).Decode(&result)
+	return result, err
+}
+
+func (c *PACDClient) SubmitBlock(ctx context.Context, blockHex string) (bool, uint32, string, error) {
+	body, err := json.Marshal(map[string]string{"blockhex": strings.TrimSpace(blockHex)})
+	if err != nil {
+		return false, 0, "", err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/submitblock", bytes.NewReader(body))
+	if err != nil {
+		return false, 0, "", err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return false, 0, "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return false, 0, "", fmt.Errorf("pacd /submitblock returned %s", resp.Status)
+	}
+	var result struct {
+		Accepted bool   `json:"accepted"`
+		Height   uint32 `json:"height"`
+		Hash     string `json:"hash"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return false, 0, "", err
+	}
+	return result.Accepted, result.Height, result.Hash, nil
+}
+
+func ValidateBlockHex(blockHex string) error {
+	_, err := hex.DecodeString(strings.TrimSpace(blockHex))
+	return err
 }
 
 func (c *PACDClient) get(ctx context.Context, path string, dest any) error {

@@ -18,6 +18,7 @@ It is intentionally the control-plane foundation, not the final miner protocol y
 go run ./cmd/pacpool \
   --pacd http://127.0.0.1:9509 \
   --pacdata http://127.0.0.1:9609 \
+  --miningaddr SYourPoolPayoutAddress \
   --listen 127.0.0.1:9809
 ```
 

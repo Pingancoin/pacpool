@@ -11,9 +11,10 @@ import (
 )
 
 type fakePACD struct {
-	mining  upstream.MiningInfo
-	network upstream.NetworkInfo
-	err     error
+	mining   upstream.MiningInfo
+	network  upstream.NetworkInfo
+	template upstream.BlockTemplate
+	err      error
 }
 
 func (f fakePACD) MiningInfo(context.Context) (upstream.MiningInfo, error) {
@@ -22,6 +23,10 @@ func (f fakePACD) MiningInfo(context.Context) (upstream.MiningInfo, error) {
 
 func (f fakePACD) NetworkInfo(context.Context) (upstream.NetworkInfo, error) {
 	return f.network, f.err
+}
+
+func (f fakePACD) BlockTemplate(context.Context, string) (upstream.BlockTemplate, error) {
+	return f.template, f.err
 }
 
 type fakePACData struct {
@@ -38,17 +43,23 @@ func TestServiceSnapshotHealthy(t *testing.T) {
 		fakePACD{
 			mining:  upstream.MiningInfo{Network: "simnet", Blocks: 15, NextHeight: 16},
 			network: upstream.NetworkInfo{Network: "simnet", BestHeight: 15, BestBlockHash: "best"},
+			template: upstream.BlockTemplate{
+				Height:            16,
+				PreviousBlockHash: "best",
+				TransactionIDs:    []string{"tx1"},
+			},
 		},
 		fakePACData{
 			status: upstream.IndexStatus{Network: "simnet", IndexedHeight: 15, IndexedHash: "best"},
 		},
 		time.Second,
 		500,
+		"SminingAddr",
 	)
 
 	svc.Refresh(context.Background())
 	snapshot := svc.Snapshot()
-	if !snapshot.Healthy || snapshot.Pool.FeePercent != 5 || !snapshot.Pool.TemplateBackfill {
+	if !snapshot.Healthy || snapshot.Pool.FeePercent != 5 || !snapshot.Pool.TemplateBackfill || !snapshot.Pool.ReadyForStratum || !snapshot.Pool.Template.Available {
 		t.Fatalf("unexpected snapshot: %+v", snapshot)
 	}
 }
@@ -59,6 +70,7 @@ func TestServiceSnapshotUnhealthy(t *testing.T) {
 		fakePACData{err: errors.New("pacdata down")},
 		time.Second,
 		500,
+		"",
 	)
 
 	svc.Refresh(context.Background())
