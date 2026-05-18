@@ -26,6 +26,7 @@ type TemplateProvider interface {
 	WorkerDifficulty(worker string) float64
 	SetStratumStats(connected int, jobs int)
 	RecordShare(worker string, accepted bool, solved bool, reason string)
+	RecordSolvedBlock(worker string, height uint32, hash string)
 }
 
 type Server struct {
@@ -343,6 +344,9 @@ func (sess *session) handleSubmit(ctx context.Context, req request) error {
 	_ = blockHash
 	if !accepted {
 		return sess.sendResponse(response{ID: req.ID, Result: false, Error: nil})
+	}
+	if blockHash != "" || height > 0 {
+		sess.server.svc.RecordSolvedBlock(worker, height, blockHash)
 	}
 	return sess.sendAccepted(req.ID, worker, true)
 }

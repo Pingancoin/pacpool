@@ -11,12 +11,14 @@ import (
 )
 
 type ShareEvent struct {
-	Timestamp  time.Time `json:"timestamp"`
-	Worker     string    `json:"worker"`
-	Difficulty float64   `json:"difficulty"`
-	Accepted   bool      `json:"accepted"`
-	Solved     bool      `json:"solved"`
-	Reason     string    `json:"reason,omitempty"`
+	Timestamp   time.Time `json:"timestamp"`
+	Worker      string    `json:"worker"`
+	Difficulty  float64   `json:"difficulty"`
+	Accepted    bool      `json:"accepted"`
+	Solved      bool      `json:"solved"`
+	Reason      string    `json:"reason,omitempty"`
+	BlockHeight uint32    `json:"block_height,omitempty"`
+	BlockHash   string    `json:"block_hash,omitempty"`
 }
 
 type shareSnapshot struct {
@@ -27,6 +29,9 @@ type shareSnapshot struct {
 	VarDiffTargetSec int64         `json:"vardiff_target_sec"`
 	Shares           ShareState    `json:"shares"`
 	Workers          []WorkerState `json:"workers"`
+	CurrentRound     RoundState    `json:"current_round"`
+	RecentRounds     []RoundState  `json:"recent_rounds"`
+	NextRoundID      uint64        `json:"next_round_id"`
 }
 
 func (s *Service) initPersistence() error {
@@ -64,6 +69,18 @@ func (s *Service) loadShareState() error {
 		s.workers[workerCopy.Name] = &workerCopy
 	}
 	s.state.Pool.Workers = s.sortedWorkersLocked()
+	s.currentRound = snapshot.CurrentRound
+	if s.currentRound.ID == 0 {
+		s.currentRound = s.newRoundLocked(s.now().UTC())
+	}
+	s.recentRounds = cloneRounds(snapshot.RecentRounds)
+	if snapshot.NextRoundID > 0 {
+		s.nextRoundID = snapshot.NextRoundID
+	} else if s.currentRound.ID > 0 {
+		s.nextRoundID = s.currentRound.ID + 1
+	}
+	s.state.Pool.CurrentRound = cloneRoundState(s.currentRound)
+	s.state.Pool.RecentRounds = cloneRounds(s.recentRounds)
 	return nil
 }
 
@@ -76,6 +93,9 @@ func (s *Service) shareSnapshotLocked() shareSnapshot {
 		VarDiffTargetSec: int64(s.varTarget / time.Second),
 		Shares:           s.state.Pool.Shares,
 		Workers:          append([]WorkerState(nil), s.state.Pool.Workers...),
+		CurrentRound:     cloneRoundState(s.currentRound),
+		RecentRounds:     cloneRounds(s.recentRounds),
+		NextRoundID:      s.nextRoundID,
 	}
 }
 

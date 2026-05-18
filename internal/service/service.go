@@ -44,6 +44,9 @@ type Service struct {
 	stratumConnected int
 	stratumJobs      int
 	workers          map[string]*WorkerState
+	nextRoundID      uint64
+	currentRound     RoundState
+	recentRounds     []RoundState
 }
 
 type State struct {
@@ -73,6 +76,8 @@ type PoolState struct {
 	Template         TemplateState `json:"template"`
 	Shares           ShareState    `json:"shares"`
 	Workers          []WorkerState `json:"workers,omitempty"`
+	CurrentRound     RoundState    `json:"current_round"`
+	RecentRounds     []RoundState  `json:"recent_rounds,omitempty"`
 	Notes            []string      `json:"notes"`
 }
 
@@ -100,11 +105,33 @@ type WorkerState struct {
 	Name           string    `json:"name"`
 	Difficulty     float64   `json:"difficulty"`
 	Accepted       uint64    `json:"accepted"`
+	AcceptedWork   float64   `json:"accepted_work"`
 	Rejected       uint64    `json:"rejected"`
 	SolvedBlocks   uint64    `json:"solved_blocks"`
 	LastShareAt    time.Time `json:"last_share_at,omitempty"`
 	LastAcceptedAt time.Time `json:"last_accepted_at,omitempty"`
 	LastError      string    `json:"last_error,omitempty"`
+}
+
+type RoundState struct {
+	ID             uint64        `json:"id"`
+	StartedAt      time.Time     `json:"started_at,omitempty"`
+	UpdatedAt      time.Time     `json:"updated_at,omitempty"`
+	EndedAt        time.Time     `json:"ended_at,omitempty"`
+	AcceptedShares uint64        `json:"accepted_shares"`
+	AcceptedWork   float64       `json:"accepted_work"`
+	Solved         bool          `json:"solved"`
+	FoundBy        string        `json:"found_by,omitempty"`
+	BlockHeight    uint32        `json:"block_height,omitempty"`
+	BlockHash      string        `json:"block_hash,omitempty"`
+	Workers        []RoundWorker `json:"workers,omitempty"`
+}
+
+type RoundWorker struct {
+	Name           string    `json:"name"`
+	AcceptedShares uint64    `json:"accepted_shares"`
+	AcceptedWork   float64   `json:"accepted_work"`
+	LastShareAt    time.Time `json:"last_share_at,omitempty"`
 }
 
 type Options struct {
@@ -158,24 +185,27 @@ func New(pacd PACDSource, pacdata PACDataSource, opts Options) (*Service, error)
 		Errors: make(map[string]string),
 	}
 	svc := &Service{
-		pacd:       pacd,
-		pacdata:    pacdata,
-		interval:   opts.Interval,
-		feeBPS:     opts.FeeBPS,
-		miningAddr: opts.MiningAddr,
-		shareDiff:  opts.ShareDiff,
-		varDiff:    opts.VarDiff,
-		varTarget:  opts.VarDiffTarget,
-		varMin:     opts.VarDiffMin,
-		varMax:     opts.VarDiffMax,
-		dataDir:    opts.DataDir,
-		state:      state,
-		workers:    make(map[string]*WorkerState),
-		now:        opts.Now,
+		pacd:        pacd,
+		pacdata:     pacdata,
+		interval:    opts.Interval,
+		feeBPS:      opts.FeeBPS,
+		miningAddr:  opts.MiningAddr,
+		shareDiff:   opts.ShareDiff,
+		varDiff:     opts.VarDiff,
+		varTarget:   opts.VarDiffTarget,
+		varMin:      opts.VarDiffMin,
+		varMax:      opts.VarDiffMax,
+		dataDir:     opts.DataDir,
+		state:       state,
+		workers:     make(map[string]*WorkerState),
+		now:         opts.Now,
+		nextRoundID: 1,
 	}
 	if svc.now == nil {
 		svc.now = time.Now
 	}
+	svc.currentRound = svc.newRoundLocked(svc.now().UTC())
+	svc.state.Pool.CurrentRound = svc.currentRound
 	if err := svc.initPersistence(); err != nil {
 		return nil, err
 	}
@@ -260,6 +290,8 @@ func (s *Service) Snapshot() State {
 	clone := s.state
 	clone.Pool.Notes = append([]string(nil), s.state.Pool.Notes...)
 	clone.Pool.Workers = append([]WorkerState(nil), s.state.Pool.Workers...)
+	clone.Pool.CurrentRound = cloneRoundState(s.state.Pool.CurrentRound)
+	clone.Pool.RecentRounds = cloneRounds(s.state.Pool.RecentRounds)
 	if len(s.state.Errors) > 0 {
 		clone.Errors = make(map[string]string, len(s.state.Errors))
 		for k, v := range s.state.Errors {
@@ -316,10 +348,16 @@ func (s *Service) RecordShare(worker string, accepted bool, solved bool, reason 
 		s.workers[worker] = ws
 	}
 	ws.LastShareAt = now
+	shareWork := ws.Difficulty
+	if shareWork <= 0 {
+		shareWork = s.shareDiff
+	}
 	if accepted {
 		s.state.Pool.Shares.Accepted++
 		s.state.Pool.Shares.LastAcceptedAt = now
 		ws.Accepted++
+		ws.AcceptedWork += shareWork
+		s.applyShareToRoundLocked(ws.Name, shareWork, now)
 		if s.varDiff && !ws.LastAcceptedAt.IsZero() {
 			ws.Difficulty = adjustDifficulty(ws.Difficulty, now.Sub(ws.LastAcceptedAt), s.varTarget, s.varMin, s.varMax)
 		}
@@ -340,6 +378,8 @@ func (s *Service) RecordShare(worker string, accepted bool, solved bool, reason 
 		ws.Difficulty = s.shareDiff
 	}
 	s.state.Pool.Workers = s.sortedWorkersLocked()
+	s.state.Pool.CurrentRound = cloneRoundState(s.currentRound)
+	s.state.Pool.RecentRounds = cloneRounds(s.recentRounds)
 	snapshot := s.shareSnapshotLocked()
 	event := ShareEvent{
 		Timestamp:  now,
@@ -362,6 +402,9 @@ func (s *Service) sortedWorkersLocked() []WorkerState {
 		if workers[i].SolvedBlocks != workers[j].SolvedBlocks {
 			return workers[i].SolvedBlocks > workers[j].SolvedBlocks
 		}
+		if workers[i].AcceptedWork != workers[j].AcceptedWork {
+			return workers[i].AcceptedWork > workers[j].AcceptedWork
+		}
 		if workers[i].Accepted != workers[j].Accepted {
 			return workers[i].Accepted > workers[j].Accepted
 		}
@@ -376,6 +419,43 @@ func (s *Service) WorkerDifficulty(worker string) float64 {
 	return s.workerDifficultyLocked(worker)
 }
 
+func (s *Service) RecordSolvedBlock(worker string, height uint32, hash string) {
+	s.mu.Lock()
+	now := s.now().UTC()
+	if worker == "" {
+		worker = "anonymous"
+	}
+	if s.currentRound.ID == 0 {
+		s.currentRound = s.newRoundLocked(now)
+	}
+	s.currentRound.Solved = true
+	s.currentRound.FoundBy = worker
+	s.currentRound.BlockHeight = height
+	s.currentRound.BlockHash = hash
+	s.currentRound.EndedAt = now
+	s.currentRound.UpdatedAt = now
+	finished := cloneRoundState(s.currentRound)
+	s.recentRounds = append([]RoundState{finished}, s.recentRounds...)
+	if len(s.recentRounds) > 20 {
+		s.recentRounds = s.recentRounds[:20]
+	}
+	s.nextRoundID++
+	s.currentRound = s.newRoundLocked(now)
+	s.state.Pool.Workers = s.sortedWorkersLocked()
+	s.state.Pool.CurrentRound = cloneRoundState(s.currentRound)
+	s.state.Pool.RecentRounds = cloneRounds(s.recentRounds)
+	snapshot := s.shareSnapshotLocked()
+	s.mu.Unlock()
+	s.persistShareUpdate(ShareEvent{
+		Timestamp:   now,
+		Worker:      worker,
+		Accepted:    true,
+		Solved:      true,
+		BlockHeight: height,
+		BlockHash:   hash,
+	}, snapshot)
+}
+
 func (s *Service) workerDifficultyLocked(worker string) float64 {
 	if worker == "" {
 		return s.shareDiff
@@ -384,6 +464,64 @@ func (s *Service) workerDifficultyLocked(worker string) float64 {
 		return ws.Difficulty
 	}
 	return s.shareDiff
+}
+
+func (s *Service) applyShareToRoundLocked(worker string, shareWork float64, now time.Time) {
+	if s.currentRound.ID == 0 {
+		s.currentRound = s.newRoundLocked(now)
+	}
+	s.currentRound.AcceptedShares++
+	s.currentRound.AcceptedWork += shareWork
+	s.currentRound.UpdatedAt = now
+	found := false
+	for i := range s.currentRound.Workers {
+		if s.currentRound.Workers[i].Name == worker {
+			s.currentRound.Workers[i].AcceptedShares++
+			s.currentRound.Workers[i].AcceptedWork += shareWork
+			s.currentRound.Workers[i].LastShareAt = now
+			found = true
+			break
+		}
+	}
+	if !found {
+		s.currentRound.Workers = append(s.currentRound.Workers, RoundWorker{
+			Name:           worker,
+			AcceptedShares: 1,
+			AcceptedWork:   shareWork,
+			LastShareAt:    now,
+		})
+	}
+	sort.Slice(s.currentRound.Workers, func(i, j int) bool {
+		if s.currentRound.Workers[i].AcceptedWork != s.currentRound.Workers[j].AcceptedWork {
+			return s.currentRound.Workers[i].AcceptedWork > s.currentRound.Workers[j].AcceptedWork
+		}
+		if s.currentRound.Workers[i].AcceptedShares != s.currentRound.Workers[j].AcceptedShares {
+			return s.currentRound.Workers[i].AcceptedShares > s.currentRound.Workers[j].AcceptedShares
+		}
+		return s.currentRound.Workers[i].Name < s.currentRound.Workers[j].Name
+	})
+}
+
+func (s *Service) newRoundLocked(start time.Time) RoundState {
+	return RoundState{
+		ID:        s.nextRoundID,
+		StartedAt: start,
+		UpdatedAt: start,
+	}
+}
+
+func cloneRoundState(round RoundState) RoundState {
+	clone := round
+	clone.Workers = append([]RoundWorker(nil), round.Workers...)
+	return clone
+}
+
+func cloneRounds(rounds []RoundState) []RoundState {
+	out := make([]RoundState, 0, len(rounds))
+	for _, round := range rounds {
+		out = append(out, cloneRoundState(round))
+	}
+	return out
 }
 
 func adjustDifficulty(current float64, elapsed time.Duration, target time.Duration, minDiff float64, maxDiff float64) float64 {

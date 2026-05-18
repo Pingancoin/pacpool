@@ -18,16 +18,18 @@ import (
 )
 
 type fakeSvc struct {
-	template   upstream.BlockTemplate
-	connected  int
-	activeJobs int
-	blockHex   string
-	shareDiff  float64
-	accepted   int
-	rejected   int
-	solved     int
-	lastWorker string
-	lastReason string
+	template    upstream.BlockTemplate
+	connected   int
+	activeJobs  int
+	blockHex    string
+	shareDiff   float64
+	accepted    int
+	rejected    int
+	solved      int
+	lastWorker  string
+	lastReason  string
+	blockHeight uint32
+	blockHash   string
 }
 
 func (f *fakeSvc) CurrentTemplate() (upstream.BlockTemplate, bool) {
@@ -69,6 +71,12 @@ func (f *fakeSvc) RecordShare(worker string, accepted bool, solved bool, reason 
 	if solved {
 		f.solved++
 	}
+}
+
+func (f *fakeSvc) RecordSolvedBlock(worker string, height uint32, hash string) {
+	f.lastWorker = worker
+	f.blockHeight = height
+	f.blockHash = hash
 }
 
 func TestSubscribeAuthorizeAndSubmit(t *testing.T) {
@@ -149,6 +157,9 @@ func TestSubscribeAuthorizeAndSubmit(t *testing.T) {
 	}
 	if provider.accepted != 1 || provider.rejected != 0 || provider.solved != 1 || provider.lastWorker != "worker" {
 		t.Fatalf("unexpected share accounting: %+v", provider)
+	}
+	if provider.blockHeight != 16 || provider.blockHash != "blockhash" {
+		t.Fatalf("unexpected solved block attribution: %+v", provider)
 	}
 	if provider.blockHex == "" {
 		t.Fatal("expected solved block to be submitted")

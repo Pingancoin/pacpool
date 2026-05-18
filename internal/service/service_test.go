@@ -174,6 +174,12 @@ func TestRecordShareUpdatesPoolAndWorkers(t *testing.T) {
 	if snapshot.Pool.Workers[1].Name != "miner.a" || snapshot.Pool.Workers[1].Rejected != 1 || snapshot.Pool.Workers[1].Difficulty != 5 || snapshot.Pool.Workers[1].LastError != "" {
 		t.Fatalf("unexpected second worker: %+v", snapshot.Pool.Workers[1])
 	}
+	if snapshot.Pool.CurrentRound.AcceptedShares != 3 || snapshot.Pool.CurrentRound.AcceptedWork != 7.5 {
+		t.Fatalf("unexpected current round: %+v", snapshot.Pool.CurrentRound)
+	}
+	if len(snapshot.Pool.CurrentRound.Workers) != 2 {
+		t.Fatalf("unexpected current round workers: %+v", snapshot.Pool.CurrentRound.Workers)
+	}
 }
 
 func TestSharePersistenceReloadsState(t *testing.T) {
@@ -216,5 +222,40 @@ func TestSharePersistenceReloadsState(t *testing.T) {
 	}
 	if snapshot.Pool.LedgerPath == "" {
 		t.Fatal("expected ledger path to be exposed")
+	}
+	if snapshot.Pool.CurrentRound.AcceptedShares != 1 {
+		t.Fatalf("unexpected persisted current round: %+v", snapshot.Pool.CurrentRound)
+	}
+}
+
+func TestSolvedBlockClosesRoundAndStartsNext(t *testing.T) {
+	base := time.Date(2026, 5, 18, 12, 0, 0, 0, time.UTC)
+	current := base
+	svc, err := service.New(fakePACD{}, fakePACData{}, service.Options{
+		Interval:   time.Second,
+		FeeBPS:     500,
+		MiningAddr: "SminingAddr",
+		ShareDiff:  1,
+		Now: func() time.Time {
+			return current
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc.RecordShare("miner.round", true, true, "")
+	current = current.Add(2 * time.Second)
+	svc.RecordSolvedBlock("miner.round", 123, "abc123")
+
+	snapshot := svc.Snapshot()
+	if len(snapshot.Pool.RecentRounds) != 1 {
+		t.Fatalf("recent rounds = %d, want 1", len(snapshot.Pool.RecentRounds))
+	}
+	round := snapshot.Pool.RecentRounds[0]
+	if !round.Solved || round.FoundBy != "miner.round" || round.BlockHeight != 123 || round.BlockHash != "abc123" {
+		t.Fatalf("unexpected archived round: %+v", round)
+	}
+	if snapshot.Pool.CurrentRound.ID != round.ID+1 || snapshot.Pool.CurrentRound.AcceptedShares != 0 {
+		t.Fatalf("unexpected next round state: %+v", snapshot.Pool.CurrentRound)
 	}
 }
