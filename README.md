@@ -19,7 +19,7 @@ The Stratum side is intentionally minimal for this stage. It supports:
 - `mining.set_difficulty`
 - `mining.submit`
 
-At the moment, the pool uses per-worker VarDiff, persists its share ledger on local disk, tracks payout-ready rounds plus found-block attribution, and calculates payout previews per solved round. Extranonce fanout, actual payout execution, and miner dashboards come next.
+At the moment, the pool uses per-worker VarDiff, persists its share ledger on local disk, tracks payout-ready rounds plus found-block attribution, calculates payout previews per solved round, and can mark payout batches executed in its ledger. Extranonce fanout, wallet-linked payout automation, and miner dashboards come next.
 
 ## Run
 
@@ -41,6 +41,8 @@ go run ./cmd/pacpool \
 - `/`
 - `/healthz`
 - `/status`
+- `/payouts`
+- `/payouts/execute`
 
 ## Status fields
 

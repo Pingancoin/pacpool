@@ -20,6 +20,8 @@ func New(svc *service.Service) *Server {
 	s.mux.HandleFunc("/", s.handleIndex)
 	s.mux.HandleFunc("/healthz", s.handleHealth)
 	s.mux.HandleFunc("/status", s.handleStatus)
+	s.mux.HandleFunc("/payouts", s.handlePayouts)
+	s.mux.HandleFunc("/payouts/execute", s.handlePayoutExecute)
 	return s
 }
 
@@ -37,6 +39,8 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		"routes": []string{
 			"/healthz",
 			"/status",
+			"/payouts",
+			"/payouts/execute",
 		},
 	})
 }
@@ -56,6 +60,45 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, s.service.Snapshot())
+}
+
+func (s *Server) handlePayouts(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	status := s.service.Snapshot()
+	writeJSON(w, http.StatusOK, map[string]any{
+		"pending_payouts": status.Pool.PendingPayouts,
+		"balances":        status.Pool.Balances,
+		"payments":        status.Pool.Payments,
+		"recent_rounds":   status.Pool.RecentRounds,
+	})
+}
+
+func (s *Server) handlePayoutExecute(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	var req struct {
+		TxID string `json:"txid"`
+		Note string `json:"note"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid payout request"})
+		return
+	}
+	record, ok := s.service.ExecutePayouts(req.TxID, req.Note)
+	if !ok {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "no pending payouts"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"executed": true,
+		"payment":  record,
+		"status":   s.service.Snapshot().Pool,
+	})
 }
 
 func writeJSON(w http.ResponseWriter, status int, value any) {

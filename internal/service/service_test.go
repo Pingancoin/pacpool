@@ -242,6 +242,27 @@ func TestSharePersistenceReloadsState(t *testing.T) {
 	if len(snapshot.Pool.PendingPayouts) != 1 || snapshot.Pool.PendingPayouts[0].Amount != 76 {
 		t.Fatalf("unexpected persisted pending payouts: %+v", snapshot.Pool.PendingPayouts)
 	}
+	payment, ok := reloaded.ExecutePayouts("persist-tx", "persist note")
+	if !ok || payment.Total != 76 {
+		t.Fatalf("unexpected persisted payout execution: %+v ok=%v", payment, ok)
+	}
+	reloadedAgain, err := service.New(fakePACD{}, fakePACData{}, service.Options{
+		Interval:   time.Second,
+		FeeBPS:     500,
+		MiningAddr: "SminingAddr",
+		ShareDiff:  1,
+		DataDir:    dataDir,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	finalSnapshot := reloadedAgain.Snapshot()
+	if len(finalSnapshot.Pool.Payments) != 1 || finalSnapshot.Pool.Payments[0].TxID != "persist-tx" {
+		t.Fatalf("unexpected persisted payments: %+v", finalSnapshot.Pool.Payments)
+	}
+	if len(finalSnapshot.Pool.Balances) != 1 || finalSnapshot.Pool.Balances[0].Paid != 76 || finalSnapshot.Pool.Balances[0].Unpaid != 0 {
+		t.Fatalf("unexpected persisted balances: %+v", finalSnapshot.Pool.Balances)
+	}
 }
 
 func TestSolvedBlockClosesRoundAndStartsNext(t *testing.T) {

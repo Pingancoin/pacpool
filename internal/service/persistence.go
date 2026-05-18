@@ -22,16 +22,17 @@ type ShareEvent struct {
 }
 
 type shareSnapshot struct {
-	Version          string        `json:"version"`
-	UpdatedAt        time.Time     `json:"updated_at"`
-	BaseDifficulty   float64       `json:"base_difficulty"`
-	VarDiffEnabled   bool          `json:"vardiff_enabled"`
-	VarDiffTargetSec int64         `json:"vardiff_target_sec"`
-	Shares           ShareState    `json:"shares"`
-	Workers          []WorkerState `json:"workers"`
-	CurrentRound     RoundState    `json:"current_round"`
-	RecentRounds     []RoundState  `json:"recent_rounds"`
-	NextRoundID      uint64        `json:"next_round_id"`
+	Version          string          `json:"version"`
+	UpdatedAt        time.Time       `json:"updated_at"`
+	BaseDifficulty   float64         `json:"base_difficulty"`
+	VarDiffEnabled   bool            `json:"vardiff_enabled"`
+	VarDiffTargetSec int64           `json:"vardiff_target_sec"`
+	Shares           ShareState      `json:"shares"`
+	Workers          []WorkerState   `json:"workers"`
+	CurrentRound     RoundState      `json:"current_round"`
+	RecentRounds     []RoundState    `json:"recent_rounds"`
+	Payments         []PaymentRecord `json:"payments"`
+	NextRoundID      uint64          `json:"next_round_id"`
 }
 
 func (s *Service) initPersistence() error {
@@ -81,7 +82,9 @@ func (s *Service) loadShareState() error {
 	}
 	s.state.Pool.CurrentRound = cloneRoundState(s.currentRound)
 	s.state.Pool.RecentRounds = cloneRounds(s.recentRounds)
+	s.state.Pool.Payments = clonePayments(snapshot.Payments)
 	s.state.Pool.PendingPayouts = s.pendingPayoutsLocked()
+	s.state.Pool.Balances = s.balanceEntriesLocked()
 	return nil
 }
 
@@ -96,6 +99,7 @@ func (s *Service) shareSnapshotLocked() shareSnapshot {
 		Workers:          append([]WorkerState(nil), s.state.Pool.Workers...),
 		CurrentRound:     cloneRoundState(s.currentRound),
 		RecentRounds:     cloneRounds(s.recentRounds),
+		Payments:         clonePayments(s.state.Pool.Payments),
 		NextRoundID:      s.nextRoundID,
 	}
 }

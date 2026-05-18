@@ -2,8 +2,10 @@ package service
 
 import (
 	"context"
+	"fmt"
 	"math"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -60,26 +62,28 @@ type State struct {
 }
 
 type PoolState struct {
-	Name             string        `json:"name"`
-	Version          string        `json:"version"`
-	FeePercent       float64       `json:"fee_percent"`
-	ShareDifficulty  float64       `json:"share_difficulty"`
-	VarDiffEnabled   bool          `json:"vardiff_enabled"`
-	VarDiffTargetSec int64         `json:"vardiff_target_sec"`
-	ConnectedMiners  int           `json:"connected_miners"`
-	ActiveJobs       int           `json:"active_jobs"`
-	ReadyForStratum  bool          `json:"ready_for_stratum"`
-	TemplateBackfill bool          `json:"template_backfill"`
-	MiningAddress    string        `json:"mining_address,omitempty"`
-	LedgerPath       string        `json:"ledger_path,omitempty"`
-	LastLedgerError  string        `json:"last_ledger_error,omitempty"`
-	Template         TemplateState `json:"template"`
-	Shares           ShareState    `json:"shares"`
-	Workers          []WorkerState `json:"workers,omitempty"`
-	CurrentRound     RoundState    `json:"current_round"`
-	RecentRounds     []RoundState  `json:"recent_rounds,omitempty"`
-	PendingPayouts   []PayoutEntry `json:"pending_payouts,omitempty"`
-	Notes            []string      `json:"notes"`
+	Name             string          `json:"name"`
+	Version          string          `json:"version"`
+	FeePercent       float64         `json:"fee_percent"`
+	ShareDifficulty  float64         `json:"share_difficulty"`
+	VarDiffEnabled   bool            `json:"vardiff_enabled"`
+	VarDiffTargetSec int64           `json:"vardiff_target_sec"`
+	ConnectedMiners  int             `json:"connected_miners"`
+	ActiveJobs       int             `json:"active_jobs"`
+	ReadyForStratum  bool            `json:"ready_for_stratum"`
+	TemplateBackfill bool            `json:"template_backfill"`
+	MiningAddress    string          `json:"mining_address,omitempty"`
+	LedgerPath       string          `json:"ledger_path,omitempty"`
+	LastLedgerError  string          `json:"last_ledger_error,omitempty"`
+	Template         TemplateState   `json:"template"`
+	Shares           ShareState      `json:"shares"`
+	Workers          []WorkerState   `json:"workers,omitempty"`
+	CurrentRound     RoundState      `json:"current_round"`
+	RecentRounds     []RoundState    `json:"recent_rounds,omitempty"`
+	PendingPayouts   []PayoutEntry   `json:"pending_payouts,omitempty"`
+	Balances         []BalanceEntry  `json:"balances,omitempty"`
+	Payments         []PaymentRecord `json:"payments,omitempty"`
+	Notes            []string        `json:"notes"`
 }
 
 type TemplateState struct {
@@ -147,6 +151,23 @@ type PayoutEntry struct {
 	Work   float64 `json:"work"`
 }
 
+type BalanceEntry struct {
+	Worker string `json:"worker"`
+	Unpaid int64  `json:"unpaid"`
+	Paid   int64  `json:"paid"`
+	Total  int64  `json:"total"`
+}
+
+type PaymentRecord struct {
+	ID        string        `json:"id"`
+	CreatedAt time.Time     `json:"created_at"`
+	TxID      string        `json:"txid,omitempty"`
+	Note      string        `json:"note,omitempty"`
+	Total     int64         `json:"total"`
+	Rounds    []uint64      `json:"rounds"`
+	Payouts   []PayoutEntry `json:"payouts"`
+}
+
 type Options struct {
 	Interval      time.Duration
 	FeeBPS        int
@@ -191,8 +212,8 @@ func New(pacd PACDSource, pacdata PACDataSource, opts Options) (*Service, error)
 				"Phase 0 control plane is live.",
 				"Minimal Stratum work distribution is live.",
 				"Per-worker share accounting is live.",
-				"VarDiff, persistent share ledger, and payout previews are live.",
-				"Next step is payout execution and miner dashboards.",
+				"VarDiff, persistent share ledger, and payout execution are live.",
+				"Next step is miner dashboards and wallet-linked payout automation.",
 			},
 		},
 		Errors: make(map[string]string),
@@ -305,7 +326,9 @@ func (s *Service) Snapshot() State {
 	clone.Pool.Workers = append([]WorkerState(nil), s.state.Pool.Workers...)
 	clone.Pool.CurrentRound = cloneRoundState(s.state.Pool.CurrentRound)
 	clone.Pool.RecentRounds = cloneRounds(s.state.Pool.RecentRounds)
-	clone.Pool.PendingPayouts = append([]PayoutEntry(nil), s.state.Pool.PendingPayouts...)
+	clone.Pool.PendingPayouts = append(make([]PayoutEntry, 0, len(s.state.Pool.PendingPayouts)), s.state.Pool.PendingPayouts...)
+	clone.Pool.Balances = append(make([]BalanceEntry, 0, len(s.state.Pool.Balances)), s.state.Pool.Balances...)
+	clone.Pool.Payments = clonePayments(s.state.Pool.Payments)
 	if len(s.state.Errors) > 0 {
 		clone.Errors = make(map[string]string, len(s.state.Errors))
 		for k, v := range s.state.Errors {
@@ -460,6 +483,7 @@ func (s *Service) RecordSolvedBlock(worker string, height uint32, hash string) {
 	s.state.Pool.CurrentRound = cloneRoundState(s.currentRound)
 	s.state.Pool.RecentRounds = cloneRounds(s.recentRounds)
 	s.state.Pool.PendingPayouts = s.pendingPayoutsLocked()
+	s.state.Pool.Balances = s.balanceEntriesLocked()
 	snapshot := s.shareSnapshotLocked()
 	s.mu.Unlock()
 	s.persistShareUpdate(ShareEvent{
@@ -541,6 +565,17 @@ func cloneRounds(rounds []RoundState) []RoundState {
 	return out
 }
 
+func clonePayments(payments []PaymentRecord) []PaymentRecord {
+	out := make([]PaymentRecord, 0, len(payments))
+	for _, payment := range payments {
+		clone := payment
+		clone.Rounds = append([]uint64(nil), payment.Rounds...)
+		clone.Payouts = append([]PayoutEntry(nil), payment.Payouts...)
+		out = append(out, clone)
+	}
+	return out
+}
+
 func (s *Service) finalizeRoundPayoutLocked(round *RoundState) {
 	if round == nil || round.AcceptedWork <= 0 {
 		return
@@ -614,6 +649,90 @@ func (s *Service) pendingPayoutsLocked() []PayoutEntry {
 		return payouts[i].Worker < payouts[j].Worker
 	})
 	return payouts
+}
+
+func (s *Service) balanceEntriesLocked() []BalanceEntry {
+	type totals struct {
+		unpaid int64
+		paid   int64
+	}
+	entries := make(map[string]*totals)
+	for _, round := range s.recentRounds {
+		for _, payout := range round.Payouts {
+			entry, ok := entries[payout.Worker]
+			if !ok {
+				entry = &totals{}
+				entries[payout.Worker] = entry
+			}
+			if round.Paid {
+				entry.paid += payout.Amount
+			} else {
+				entry.unpaid += payout.Amount
+			}
+		}
+	}
+	balances := make([]BalanceEntry, 0, len(entries))
+	for worker, entry := range entries {
+		balances = append(balances, BalanceEntry{
+			Worker: worker,
+			Unpaid: entry.unpaid,
+			Paid:   entry.paid,
+			Total:  entry.unpaid + entry.paid,
+		})
+	}
+	sort.Slice(balances, func(i, j int) bool {
+		if balances[i].Unpaid != balances[j].Unpaid {
+			return balances[i].Unpaid > balances[j].Unpaid
+		}
+		if balances[i].Total != balances[j].Total {
+			return balances[i].Total > balances[j].Total
+		}
+		return balances[i].Worker < balances[j].Worker
+	})
+	return balances
+}
+
+func (s *Service) ExecutePayouts(txid string, note string) (PaymentRecord, bool) {
+	s.mu.Lock()
+
+	payouts := s.pendingPayoutsLocked()
+	if len(payouts) == 0 {
+		s.mu.Unlock()
+		return PaymentRecord{}, false
+	}
+	now := s.now().UTC()
+	record := PaymentRecord{
+		ID:        fmt.Sprintf("pay-%d", now.UnixNano()),
+		CreatedAt: now,
+		TxID:      strings.TrimSpace(txid),
+		Note:      strings.TrimSpace(note),
+		Payouts:   append([]PayoutEntry(nil), payouts...),
+	}
+	for _, payout := range payouts {
+		record.Total += payout.Amount
+	}
+	for i := range s.recentRounds {
+		if !s.recentRounds[i].Solved || s.recentRounds[i].Paid {
+			continue
+		}
+		s.recentRounds[i].Paid = true
+		record.Rounds = append(record.Rounds, s.recentRounds[i].ID)
+	}
+	s.state.Pool.Payments = append([]PaymentRecord{record}, s.state.Pool.Payments...)
+	if len(s.state.Pool.Payments) > 50 {
+		s.state.Pool.Payments = s.state.Pool.Payments[:50]
+	}
+	s.state.Pool.RecentRounds = cloneRounds(s.recentRounds)
+	s.state.Pool.PendingPayouts = s.pendingPayoutsLocked()
+	s.state.Pool.Balances = s.balanceEntriesLocked()
+	snapshot := s.shareSnapshotLocked()
+	s.mu.Unlock()
+	s.persistShareUpdate(ShareEvent{
+		Timestamp: now,
+		Accepted:  true,
+		Reason:    "payout executed",
+	}, snapshot)
+	return record, true
 }
 
 func adjustDifficulty(current float64, elapsed time.Duration, target time.Duration, minDiff float64, maxDiff float64) float64 {
