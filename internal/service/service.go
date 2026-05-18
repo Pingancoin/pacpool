@@ -78,6 +78,7 @@ type PoolState struct {
 	Workers          []WorkerState `json:"workers,omitempty"`
 	CurrentRound     RoundState    `json:"current_round"`
 	RecentRounds     []RoundState  `json:"recent_rounds,omitempty"`
+	PendingPayouts   []PayoutEntry `json:"pending_payouts,omitempty"`
 	Notes            []string      `json:"notes"`
 }
 
@@ -124,6 +125,12 @@ type RoundState struct {
 	FoundBy        string        `json:"found_by,omitempty"`
 	BlockHeight    uint32        `json:"block_height,omitempty"`
 	BlockHash      string        `json:"block_hash,omitempty"`
+	RewardTotal    int64         `json:"reward_total,omitempty"`
+	RewardFees     int64         `json:"reward_fees,omitempty"`
+	PoolFee        int64         `json:"pool_fee,omitempty"`
+	Distributable  int64         `json:"distributable,omitempty"`
+	Paid           bool          `json:"paid"`
+	Payouts        []PayoutEntry `json:"payouts,omitempty"`
 	Workers        []RoundWorker `json:"workers,omitempty"`
 }
 
@@ -132,6 +139,12 @@ type RoundWorker struct {
 	AcceptedShares uint64    `json:"accepted_shares"`
 	AcceptedWork   float64   `json:"accepted_work"`
 	LastShareAt    time.Time `json:"last_share_at,omitempty"`
+}
+
+type PayoutEntry struct {
+	Worker string  `json:"worker"`
+	Amount int64   `json:"amount"`
+	Work   float64 `json:"work"`
 }
 
 type Options struct {
@@ -178,8 +191,8 @@ func New(pacd PACDSource, pacdata PACDataSource, opts Options) (*Service, error)
 				"Phase 0 control plane is live.",
 				"Minimal Stratum work distribution is live.",
 				"Per-worker share accounting is live.",
-				"VarDiff and persistent share ledger are live.",
-				"Next step is payout logic and miner dashboards.",
+				"VarDiff, persistent share ledger, and payout previews are live.",
+				"Next step is payout execution and miner dashboards.",
 			},
 		},
 		Errors: make(map[string]string),
@@ -292,6 +305,7 @@ func (s *Service) Snapshot() State {
 	clone.Pool.Workers = append([]WorkerState(nil), s.state.Pool.Workers...)
 	clone.Pool.CurrentRound = cloneRoundState(s.state.Pool.CurrentRound)
 	clone.Pool.RecentRounds = cloneRounds(s.state.Pool.RecentRounds)
+	clone.Pool.PendingPayouts = append([]PayoutEntry(nil), s.state.Pool.PendingPayouts...)
 	if len(s.state.Errors) > 0 {
 		clone.Errors = make(map[string]string, len(s.state.Errors))
 		for k, v := range s.state.Errors {
@@ -434,6 +448,7 @@ func (s *Service) RecordSolvedBlock(worker string, height uint32, hash string) {
 	s.currentRound.BlockHash = hash
 	s.currentRound.EndedAt = now
 	s.currentRound.UpdatedAt = now
+	s.finalizeRoundPayoutLocked(&s.currentRound)
 	finished := cloneRoundState(s.currentRound)
 	s.recentRounds = append([]RoundState{finished}, s.recentRounds...)
 	if len(s.recentRounds) > 20 {
@@ -444,6 +459,7 @@ func (s *Service) RecordSolvedBlock(worker string, height uint32, hash string) {
 	s.state.Pool.Workers = s.sortedWorkersLocked()
 	s.state.Pool.CurrentRound = cloneRoundState(s.currentRound)
 	s.state.Pool.RecentRounds = cloneRounds(s.recentRounds)
+	s.state.Pool.PendingPayouts = s.pendingPayoutsLocked()
 	snapshot := s.shareSnapshotLocked()
 	s.mu.Unlock()
 	s.persistShareUpdate(ShareEvent{
@@ -513,6 +529,7 @@ func (s *Service) newRoundLocked(start time.Time) RoundState {
 func cloneRoundState(round RoundState) RoundState {
 	clone := round
 	clone.Workers = append([]RoundWorker(nil), round.Workers...)
+	clone.Payouts = append([]PayoutEntry(nil), round.Payouts...)
 	return clone
 }
 
@@ -522,6 +539,81 @@ func cloneRounds(rounds []RoundState) []RoundState {
 		out = append(out, cloneRoundState(round))
 	}
 	return out
+}
+
+func (s *Service) finalizeRoundPayoutLocked(round *RoundState) {
+	if round == nil || round.AcceptedWork <= 0 {
+		return
+	}
+	rewardTotal := s.lastTemplate.NextSubsidy.Miner
+	if rewardTotal <= 0 {
+		rewardTotal = s.state.PACD.NextSubsidy.Miner
+	}
+	round.RewardTotal = rewardTotal
+	round.RewardFees = s.lastTemplate.TotalFees
+	round.PoolFee = rewardTotal * int64(s.feeBPS) / 10000
+	round.Distributable = rewardTotal - round.PoolFee
+	if round.Distributable < 0 {
+		round.Distributable = 0
+	}
+	round.Payouts = calculatePayouts(round.Workers, round.Distributable, round.AcceptedWork)
+}
+
+func calculatePayouts(workers []RoundWorker, distributable int64, totalWork float64) []PayoutEntry {
+	if distributable <= 0 || totalWork <= 0 || len(workers) == 0 {
+		return nil
+	}
+	payouts := make([]PayoutEntry, 0, len(workers))
+	remainder := distributable
+	for _, worker := range workers {
+		share := int64(math.Floor((worker.AcceptedWork / totalWork) * float64(distributable)))
+		if share < 0 {
+			share = 0
+		}
+		payouts = append(payouts, PayoutEntry{
+			Worker: worker.Name,
+			Amount: share,
+			Work:   worker.AcceptedWork,
+		})
+		remainder -= share
+	}
+	for i := 0; remainder > 0 && i < len(payouts); i++ {
+		payouts[i].Amount++
+		remainder--
+		if i == len(payouts)-1 && remainder > 0 {
+			i = -1
+		}
+	}
+	return payouts
+}
+
+func (s *Service) pendingPayoutsLocked() []PayoutEntry {
+	totals := make(map[string]*PayoutEntry)
+	for _, round := range s.recentRounds {
+		if !round.Solved || round.Paid {
+			continue
+		}
+		for _, payout := range round.Payouts {
+			entry, ok := totals[payout.Worker]
+			if !ok {
+				entry = &PayoutEntry{Worker: payout.Worker}
+				totals[payout.Worker] = entry
+			}
+			entry.Amount += payout.Amount
+			entry.Work += payout.Work
+		}
+	}
+	payouts := make([]PayoutEntry, 0, len(totals))
+	for _, payout := range totals {
+		payouts = append(payouts, *payout)
+	}
+	sort.Slice(payouts, func(i, j int) bool {
+		if payouts[i].Amount != payouts[j].Amount {
+			return payouts[i].Amount > payouts[j].Amount
+		}
+		return payouts[i].Worker < payouts[j].Worker
+	})
+	return payouts
 }
 
 func adjustDifficulty(current float64, elapsed time.Duration, target time.Duration, minDiff float64, maxDiff float64) float64 {

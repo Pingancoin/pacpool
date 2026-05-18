@@ -186,7 +186,14 @@ func TestSharePersistenceReloadsState(t *testing.T) {
 	dataDir := t.TempDir()
 	base := time.Date(2026, 5, 18, 11, 0, 0, 0, time.UTC)
 	current := base
-	svc, err := service.New(fakePACD{}, fakePACData{}, service.Options{
+	pacd := fakePACD{
+		template: upstream.BlockTemplate{
+			Height:    50,
+			TotalFees: 5,
+		},
+	}
+	pacd.template.NextSubsidy.Miner = 80
+	svc, err := service.New(pacd, fakePACData{}, service.Options{
 		Interval:   time.Second,
 		FeeBPS:     500,
 		MiningAddr: "SminingAddr",
@@ -199,9 +206,12 @@ func TestSharePersistenceReloadsState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	svc.Refresh(context.Background())
 	svc.RecordShare("miner.persist", true, false, "")
 	current = current.Add(20 * time.Second)
 	svc.RecordShare("miner.persist", false, false, "low difficulty share")
+	current = current.Add(2 * time.Second)
+	svc.RecordSolvedBlock("miner.persist", 50, "persist50")
 
 	reloaded, err := service.New(fakePACD{}, fakePACData{}, service.Options{
 		Interval:   time.Second,
@@ -223,15 +233,28 @@ func TestSharePersistenceReloadsState(t *testing.T) {
 	if snapshot.Pool.LedgerPath == "" {
 		t.Fatal("expected ledger path to be exposed")
 	}
-	if snapshot.Pool.CurrentRound.AcceptedShares != 1 {
+	if snapshot.Pool.CurrentRound.AcceptedShares != 0 {
 		t.Fatalf("unexpected persisted current round: %+v", snapshot.Pool.CurrentRound)
+	}
+	if len(snapshot.Pool.RecentRounds) != 1 || snapshot.Pool.RecentRounds[0].BlockHash != "persist50" {
+		t.Fatalf("unexpected persisted recent rounds: %+v", snapshot.Pool.RecentRounds)
+	}
+	if len(snapshot.Pool.PendingPayouts) != 1 || snapshot.Pool.PendingPayouts[0].Amount != 76 {
+		t.Fatalf("unexpected persisted pending payouts: %+v", snapshot.Pool.PendingPayouts)
 	}
 }
 
 func TestSolvedBlockClosesRoundAndStartsNext(t *testing.T) {
 	base := time.Date(2026, 5, 18, 12, 0, 0, 0, time.UTC)
 	current := base
-	svc, err := service.New(fakePACD{}, fakePACData{}, service.Options{
+	pacd := fakePACD{
+		template: upstream.BlockTemplate{
+			Height:    123,
+			TotalFees: 10,
+		},
+	}
+	pacd.template.NextSubsidy.Miner = 100
+	svc, err := service.New(pacd, fakePACData{}, service.Options{
 		Interval:   time.Second,
 		FeeBPS:     500,
 		MiningAddr: "SminingAddr",
@@ -243,6 +266,7 @@ func TestSolvedBlockClosesRoundAndStartsNext(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	svc.Refresh(context.Background())
 	svc.RecordShare("miner.round", true, true, "")
 	current = current.Add(2 * time.Second)
 	svc.RecordSolvedBlock("miner.round", 123, "abc123")
@@ -254,6 +278,15 @@ func TestSolvedBlockClosesRoundAndStartsNext(t *testing.T) {
 	round := snapshot.Pool.RecentRounds[0]
 	if !round.Solved || round.FoundBy != "miner.round" || round.BlockHeight != 123 || round.BlockHash != "abc123" {
 		t.Fatalf("unexpected archived round: %+v", round)
+	}
+	if round.RewardTotal != 100 || round.RewardFees != 10 || round.PoolFee != 5 || round.Distributable != 95 {
+		t.Fatalf("unexpected round reward breakdown: %+v", round)
+	}
+	if len(round.Payouts) != 1 || round.Payouts[0].Worker != "miner.round" || round.Payouts[0].Amount != 95 {
+		t.Fatalf("unexpected round payouts: %+v", round.Payouts)
+	}
+	if len(snapshot.Pool.PendingPayouts) != 1 || snapshot.Pool.PendingPayouts[0].Amount != 95 {
+		t.Fatalf("unexpected pending payouts: %+v", snapshot.Pool.PendingPayouts)
 	}
 	if snapshot.Pool.CurrentRound.ID != round.ID+1 || snapshot.Pool.CurrentRound.AcceptedShares != 0 {
 		t.Fatalf("unexpected next round state: %+v", snapshot.Pool.CurrentRound)

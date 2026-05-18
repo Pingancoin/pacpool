@@ -81,6 +81,7 @@ func (s *Service) loadShareState() error {
 	}
 	s.state.Pool.CurrentRound = cloneRoundState(s.currentRound)
 	s.state.Pool.RecentRounds = cloneRounds(s.recentRounds)
+	s.state.Pool.PendingPayouts = s.pendingPayoutsLocked()
 	return nil
 }
 
