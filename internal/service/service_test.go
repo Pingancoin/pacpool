@@ -59,6 +59,7 @@ func TestServiceSnapshotHealthy(t *testing.T) {
 		time.Second,
 		500,
 		"SminingAddr",
+		1,
 	)
 
 	svc.Refresh(context.Background())
@@ -75,6 +76,7 @@ func TestServiceSnapshotUnhealthy(t *testing.T) {
 		time.Second,
 		500,
 		"",
+		1,
 	)
 
 	svc.Refresh(context.Background())
@@ -101,6 +103,7 @@ func TestSetStratumStatsPersistsAcrossRefresh(t *testing.T) {
 		time.Second,
 		500,
 		"SminingAddr",
+		1,
 	)
 
 	svc.SetStratumStats(3, 1)
@@ -108,5 +111,30 @@ func TestSetStratumStatsPersistsAcrossRefresh(t *testing.T) {
 	snapshot := svc.Snapshot()
 	if snapshot.Pool.ConnectedMiners != 3 || snapshot.Pool.ActiveJobs != 1 {
 		t.Fatalf("unexpected stratum stats after refresh: %+v", snapshot.Pool)
+	}
+}
+
+func TestRecordShareUpdatesPoolAndWorkers(t *testing.T) {
+	svc := service.New(fakePACD{}, fakePACData{}, time.Second, 500, "SminingAddr", 2.5)
+
+	svc.RecordShare("miner.a", true, false, "")
+	svc.RecordShare("miner.a", false, false, "low difficulty share")
+	svc.RecordShare("miner.b", true, true, "")
+
+	snapshot := svc.Snapshot()
+	if snapshot.Pool.ShareDifficulty != 2.5 {
+		t.Fatalf("share difficulty = %v, want 2.5", snapshot.Pool.ShareDifficulty)
+	}
+	if snapshot.Pool.Shares.Accepted != 2 || snapshot.Pool.Shares.Rejected != 1 || snapshot.Pool.Shares.SolvedBlocks != 1 {
+		t.Fatalf("unexpected share totals: %+v", snapshot.Pool.Shares)
+	}
+	if len(snapshot.Pool.Workers) != 2 {
+		t.Fatalf("worker count = %d, want 2", len(snapshot.Pool.Workers))
+	}
+	if snapshot.Pool.Workers[0].Name != "miner.b" || snapshot.Pool.Workers[0].SolvedBlocks != 1 {
+		t.Fatalf("unexpected top worker: %+v", snapshot.Pool.Workers[0])
+	}
+	if snapshot.Pool.Workers[1].Name != "miner.a" || snapshot.Pool.Workers[1].Rejected != 1 || snapshot.Pool.Workers[1].LastError != "low difficulty share" {
+		t.Fatalf("unexpected second worker: %+v", snapshot.Pool.Workers[1])
 	}
 }

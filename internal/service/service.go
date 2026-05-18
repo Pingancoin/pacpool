@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"sort"
 	"sync"
 	"time"
 
@@ -25,12 +26,14 @@ type Service struct {
 	interval   time.Duration
 	feeBPS     int
 	miningAddr string
+	shareDiff  float64
 
 	mu               sync.RWMutex
 	state            State
 	lastTemplate     upstream.BlockTemplate
 	stratumConnected int
 	stratumJobs      int
+	workers          map[string]*WorkerState
 }
 
 type State struct {
@@ -47,12 +50,15 @@ type PoolState struct {
 	Name             string        `json:"name"`
 	Version          string        `json:"version"`
 	FeePercent       float64       `json:"fee_percent"`
+	ShareDifficulty  float64       `json:"share_difficulty"`
 	ConnectedMiners  int           `json:"connected_miners"`
 	ActiveJobs       int           `json:"active_jobs"`
 	ReadyForStratum  bool          `json:"ready_for_stratum"`
 	TemplateBackfill bool          `json:"template_backfill"`
 	MiningAddress    string        `json:"mining_address,omitempty"`
 	Template         TemplateState `json:"template"`
+	Shares           ShareState    `json:"shares"`
+	Workers          []WorkerState `json:"workers,omitempty"`
 	Notes            []string      `json:"notes"`
 }
 
@@ -67,22 +73,46 @@ type TemplateState struct {
 	CoinbaseTxID      string `json:"coinbasetxid,omitempty"`
 }
 
-func New(pacd PACDSource, pacdata PACDataSource, interval time.Duration, feeBPS int, miningAddr string) *Service {
+type ShareState struct {
+	Accepted       uint64    `json:"accepted"`
+	Rejected       uint64    `json:"rejected"`
+	SolvedBlocks   uint64    `json:"solved_blocks"`
+	LastAcceptedAt time.Time `json:"last_accepted_at,omitempty"`
+	LastRejectedAt time.Time `json:"last_rejected_at,omitempty"`
+	LastSolvedAt   time.Time `json:"last_solved_at,omitempty"`
+}
+
+type WorkerState struct {
+	Name         string    `json:"name"`
+	Difficulty   float64   `json:"difficulty"`
+	Accepted     uint64    `json:"accepted"`
+	Rejected     uint64    `json:"rejected"`
+	SolvedBlocks uint64    `json:"solved_blocks"`
+	LastShareAt  time.Time `json:"last_share_at,omitempty"`
+	LastError    string    `json:"last_error,omitempty"`
+}
+
+func New(pacd PACDSource, pacdata PACDataSource, interval time.Duration, feeBPS int, miningAddr string, shareDiff float64) *Service {
 	if interval <= 0 {
 		interval = 5 * time.Second
+	}
+	if shareDiff <= 0 {
+		shareDiff = 1
 	}
 	state := State{
 		Pool: PoolState{
 			Name:             "pacpool",
 			Version:          "0.1.0",
 			FeePercent:       float64(feeBPS) / 100,
+			ShareDifficulty:  shareDiff,
 			ReadyForStratum:  false,
 			TemplateBackfill: false,
 			MiningAddress:    miningAddr,
 			Notes: []string{
 				"Phase 0 control plane is live.",
 				"Minimal Stratum work distribution is live.",
-				"Next step is share difficulty, accounting, and payout logic.",
+				"Per-worker share accounting is live.",
+				"Next step is vardiff, payout logic, and miner dashboards.",
 			},
 		},
 		Errors: make(map[string]string),
@@ -93,7 +123,9 @@ func New(pacd PACDSource, pacdata PACDataSource, interval time.Duration, feeBPS 
 		interval:   interval,
 		feeBPS:     feeBPS,
 		miningAddr: miningAddr,
+		shareDiff:  shareDiff,
 		state:      state,
+		workers:    make(map[string]*WorkerState),
 	}
 }
 
@@ -174,6 +206,7 @@ func (s *Service) Snapshot() State {
 	defer s.mu.RUnlock()
 	clone := s.state
 	clone.Pool.Notes = append([]string(nil), s.state.Pool.Notes...)
+	clone.Pool.Workers = append([]WorkerState(nil), s.state.Pool.Workers...)
 	if len(s.state.Errors) > 0 {
 		clone.Errors = make(map[string]string, len(s.state.Errors))
 		for k, v := range s.state.Errors {
@@ -199,6 +232,12 @@ func (s *Service) SubmitSolvedBlock(ctx context.Context, blockHex string) (bool,
 	return s.pacd.SubmitBlock(ctx, blockHex)
 }
 
+func (s *Service) ShareDifficulty() float64 {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.shareDiff
+}
+
 func (s *Service) SetStratumStats(connected int, jobs int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -206,4 +245,58 @@ func (s *Service) SetStratumStats(connected int, jobs int) {
 	s.stratumJobs = jobs
 	s.state.Pool.ConnectedMiners = connected
 	s.state.Pool.ActiveJobs = jobs
+}
+
+func (s *Service) RecordShare(worker string, accepted bool, solved bool, reason string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	now := time.Now().UTC()
+	if worker == "" {
+		worker = "anonymous"
+	}
+	ws, ok := s.workers[worker]
+	if !ok {
+		ws = &WorkerState{
+			Name:       worker,
+			Difficulty: s.shareDiff,
+		}
+		s.workers[worker] = ws
+	}
+	ws.LastShareAt = now
+	ws.Difficulty = s.shareDiff
+	if accepted {
+		s.state.Pool.Shares.Accepted++
+		s.state.Pool.Shares.LastAcceptedAt = now
+		ws.Accepted++
+		ws.LastError = ""
+	} else {
+		s.state.Pool.Shares.Rejected++
+		s.state.Pool.Shares.LastRejectedAt = now
+		ws.Rejected++
+		ws.LastError = reason
+	}
+	if solved {
+		s.state.Pool.Shares.SolvedBlocks++
+		s.state.Pool.Shares.LastSolvedAt = now
+		ws.SolvedBlocks++
+	}
+	s.state.Pool.Workers = s.sortedWorkersLocked()
+}
+
+func (s *Service) sortedWorkersLocked() []WorkerState {
+	workers := make([]WorkerState, 0, len(s.workers))
+	for _, worker := range s.workers {
+		workers = append(workers, *worker)
+	}
+	sort.Slice(workers, func(i, j int) bool {
+		if workers[i].SolvedBlocks != workers[j].SolvedBlocks {
+			return workers[i].SolvedBlocks > workers[j].SolvedBlocks
+		}
+		if workers[i].Accepted != workers[j].Accepted {
+			return workers[i].Accepted > workers[j].Accepted
+		}
+		return workers[i].Name < workers[j].Name
+	})
+	return workers
 }

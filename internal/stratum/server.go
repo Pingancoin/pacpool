@@ -22,7 +22,9 @@ import (
 type TemplateProvider interface {
 	CurrentTemplate() (upstream.BlockTemplate, bool)
 	SubmitSolvedBlock(context.Context, string) (bool, uint32, string, error)
+	ShareDifficulty() float64
 	SetStratumStats(connected int, jobs int)
+	RecordShare(worker string, accepted bool, solved bool, reason string)
 }
 
 type Server struct {
@@ -151,9 +153,10 @@ func (s *Server) updateJob(template upstream.BlockTemplate) {
 	}
 	s.job = job
 	s.svc.SetStratumStats(len(s.sessions), 1)
+	shareDiff := s.svc.ShareDifficulty()
 	for sess := range s.sessions {
 		if sess.authorized && sess.subscribed {
-			_ = sess.sendDifficulty(1)
+			_ = sess.sendDifficulty(shareDiff)
 			_ = sess.sendNotify(job, true)
 		}
 	}
@@ -238,7 +241,7 @@ func (sess *session) handle(ctx context.Context, req request) error {
 			return err
 		}
 		if job := sess.server.currentJob(); job != nil && sess.subscribed {
-			if err := sess.sendDifficulty(1); err != nil {
+			if err := sess.sendDifficulty(sess.server.svc.ShareDifficulty()); err != nil {
 				return err
 			}
 			return sess.sendNotify(job, true)
@@ -253,9 +256,11 @@ func (sess *session) handle(ctx context.Context, req request) error {
 
 func (sess *session) handleSubmit(ctx context.Context, req request) error {
 	if !sess.authorized || !sess.subscribed {
+		sess.server.svc.RecordShare(sess.worker, false, false, "not subscribed or authorized")
 		return sess.sendResponse(response{ID: req.ID, Result: false, Error: []any{24, "not subscribed or authorized", nil}})
 	}
 	if len(req.Params) < 5 {
+		sess.server.svc.RecordShare(sess.worker, false, false, "invalid submit params")
 		return sess.sendResponse(response{ID: req.ID, Result: false, Error: []any{25, "invalid submit params", nil}})
 	}
 	var worker, jobID, extranonce2, ntimeHex, nonceHex string
@@ -264,33 +269,42 @@ func (sess *session) handleSubmit(ctx context.Context, req request) error {
 	_ = json.Unmarshal(req.Params[2], &extranonce2)
 	_ = json.Unmarshal(req.Params[3], &ntimeHex)
 	_ = json.Unmarshal(req.Params[4], &nonceHex)
-	_ = worker
+	if worker == "" {
+		worker = sess.worker
+	}
 	_ = extranonce2
 
 	job := sess.server.currentJob()
 	if job == nil || job.ID != jobID {
+		sess.server.svc.RecordShare(worker, false, false, "stale job")
 		return sess.sendResponse(response{ID: req.ID, Result: false, Error: []any{21, "stale job", nil}})
 	}
 	headerBytes, err := hex.DecodeString(job.HeaderHex)
 	if err != nil {
+		sess.server.svc.RecordShare(worker, false, false, "bad template header")
 		return sess.sendResponse(response{ID: req.ID, Result: false, Error: []any{20, "bad template header", nil}})
 	}
 	blockBytes, err := hex.DecodeString(job.BlockHex)
 	if err != nil {
+		sess.server.svc.RecordShare(worker, false, false, "bad template block")
 		return sess.sendResponse(response{ID: req.ID, Result: false, Error: []any{20, "bad template block", nil}})
 	}
 	if len(headerBytes) < headerLength || len(blockBytes) < headerLength {
+		sess.server.svc.RecordShare(worker, false, false, "short template")
 		return sess.sendResponse(response{ID: req.ID, Result: false, Error: []any{20, "short template", nil}})
 	}
 	ntime, err := strconv.ParseUint(strings.TrimSpace(ntimeHex), 16, 32)
 	if err != nil {
+		sess.server.svc.RecordShare(worker, false, false, "invalid ntime")
 		return sess.sendResponse(response{ID: req.ID, Result: false, Error: []any{22, "invalid ntime", nil}})
 	}
 	nonce, err := strconv.ParseUint(strings.TrimSpace(nonceHex), 16, 32)
 	if err != nil {
+		sess.server.svc.RecordShare(worker, false, false, "invalid nonce")
 		return sess.sendResponse(response{ID: req.ID, Result: false, Error: []any{22, "invalid nonce", nil}})
 	}
 	if int64(ntime) < job.Template.Timestamp {
+		sess.server.svc.RecordShare(worker, false, false, "ntime before template")
 		return sess.sendResponse(response{ID: req.ID, Result: false, Error: []any{23, "ntime before template", nil}})
 	}
 
@@ -300,20 +314,29 @@ func (sess *session) handleSubmit(ctx context.Context, req request) error {
 	copy(blockBytes[:headerLength], headerBytes[:headerLength])
 
 	hash := blake256.Sum256(headerBytes)
-	target := compactToBig(job.TargetBits)
-	if hashToBig(hash[:]).Cmp(target) > 0 {
+	networkTarget := compactToBig(job.TargetBits)
+	shareTarget := difficultyToTarget(sess.server.svc.ShareDifficulty())
+	hashValue := hashToBig(hash[:])
+	if hashValue.Cmp(shareTarget) > 0 {
+		sess.server.svc.RecordShare(worker, false, false, "low difficulty share")
 		return sess.sendResponse(response{ID: req.ID, Result: false, Error: []any{23, "low difficulty share", nil}})
+	}
+	if hashValue.Cmp(networkTarget) > 0 {
+		sess.server.svc.RecordShare(worker, true, false, "")
+		return sess.sendResponse(response{ID: req.ID, Result: true, Error: nil})
 	}
 	accepted, height, blockHash, err := sess.server.svc.SubmitSolvedBlock(ctx, hex.EncodeToString(blockBytes))
 	if err != nil {
+		sess.server.svc.RecordShare(worker, false, false, err.Error())
 		return sess.sendResponse(response{ID: req.ID, Result: false, Error: []any{20, err.Error(), nil}})
 	}
+	sess.server.svc.RecordShare(worker, accepted, accepted, "")
 	_ = height
 	_ = blockHash
 	return sess.sendResponse(response{ID: req.ID, Result: accepted, Error: nil})
 }
 
-func (sess *session) sendDifficulty(difficulty int) error {
+func (sess *session) sendDifficulty(difficulty float64) error {
 	return sess.sendResponse(response{
 		Method: "mining.set_difficulty",
 		Params: []any{difficulty},
@@ -368,4 +391,23 @@ func compactToBig(compact uint32) *big.Int {
 
 func hashToBig(hash []byte) *big.Int {
 	return new(big.Int).SetBytes(hash)
+}
+
+func difficultyToTarget(difficulty float64) *big.Int {
+	if difficulty <= 0 {
+		difficulty = 1
+	}
+	base := compactToBig(0x207fffff)
+	scaled := new(big.Rat).SetInt(base)
+	scaled.Quo(scaled, new(big.Rat).SetFloat64(difficulty))
+	target := new(big.Int)
+	scaled.Num().Quo(scaled.Num(), scaled.Denom())
+	target.Set(scaled.Num())
+	if target.Sign() <= 0 {
+		return big.NewInt(1)
+	}
+	if target.Cmp(base) > 0 {
+		return base
+	}
+	return target
 }

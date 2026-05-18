@@ -22,6 +22,12 @@ type fakeSvc struct {
 	connected  int
 	activeJobs int
 	blockHex   string
+	shareDiff  float64
+	accepted   int
+	rejected   int
+	solved     int
+	lastWorker string
+	lastReason string
 }
 
 func (f *fakeSvc) CurrentTemplate() (upstream.BlockTemplate, bool) {
@@ -33,9 +39,29 @@ func (f *fakeSvc) SubmitSolvedBlock(_ context.Context, blockHex string) (bool, u
 	return true, f.template.Height, "blockhash", nil
 }
 
+func (f *fakeSvc) ShareDifficulty() float64 {
+	if f.shareDiff <= 0 {
+		return 1
+	}
+	return f.shareDiff
+}
+
 func (f *fakeSvc) SetStratumStats(connected int, jobs int) {
 	f.connected = connected
 	f.activeJobs = jobs
+}
+
+func (f *fakeSvc) RecordShare(worker string, accepted bool, solved bool, reason string) {
+	f.lastWorker = worker
+	f.lastReason = reason
+	if accepted {
+		f.accepted++
+	} else {
+		f.rejected++
+	}
+	if solved {
+		f.solved++
+	}
 }
 
 func TestSubscribeAuthorizeAndSubmit(t *testing.T) {
@@ -53,7 +79,7 @@ func TestSubscribeAuthorizeAndSubmit(t *testing.T) {
 		HeaderHex:         hex.EncodeToString(header),
 		BlockHex:          hex.EncodeToString(block),
 	}
-	provider := &fakeSvc{template: template}
+	provider := &fakeSvc{template: template, shareDiff: 1}
 	addr := freeAddr(t)
 	server := New(addr, provider)
 
@@ -109,6 +135,9 @@ func TestSubscribeAuthorizeAndSubmit(t *testing.T) {
 	if provider.connected != 1 || provider.activeJobs != 1 {
 		t.Fatalf("unexpected stratum stats: connected=%d jobs=%d", provider.connected, provider.activeJobs)
 	}
+	if provider.accepted != 1 || provider.rejected != 0 || provider.solved != 1 || provider.lastWorker != "worker" {
+		t.Fatalf("unexpected share accounting: %+v", provider)
+	}
 	if provider.blockHex == "" {
 		t.Fatal("expected solved block to be submitted")
 	}
@@ -119,6 +148,70 @@ func TestSubscribeAuthorizeAndSubmit(t *testing.T) {
 	headerBytes := blockBytes[:headerLength]
 	if got := binary.LittleEndian.Uint32(headerBytes[headerHeightOffset:headerLength]); got != 16 {
 		t.Fatalf("submitted block height = %d, want 16", got)
+	}
+}
+
+func TestSubmitAcceptsShareWithoutBlockSolve(t *testing.T) {
+	header := make([]byte, headerLength)
+	binary.LittleEndian.PutUint64(header[headerTimestampOffset:headerBitsOffset], 1)
+	binary.LittleEndian.PutUint32(header[headerBitsOffset:headerNonceOffset], 0x206bc47f)
+	binary.LittleEndian.PutUint32(header[headerHeightOffset:headerLength], 17)
+	block := append(append([]byte(nil), header...), 0x00)
+	template := upstream.BlockTemplate{
+		Height:            17,
+		PreviousBlockHash: strings.Repeat("2", 64),
+		Bits:              "206bc47f",
+		Timestamp:         1,
+		CoinbaseTxID:      strings.Repeat("3", 64),
+		HeaderHex:         hex.EncodeToString(header),
+		BlockHex:          hex.EncodeToString(block),
+	}
+	provider := &fakeSvc{template: template, shareDiff: 1}
+	addr := freeAddr(t)
+	server := New(addr, provider)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		_ = server.Run(ctx)
+	}()
+	waitForTCP(t, addr)
+	server.updateJob(template)
+
+	conn, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	reader := bufio.NewReader(conn)
+
+	writeLine(t, conn, `{"id":1,"method":"mining.subscribe","params":[]}`)
+	var subscribe map[string]any
+	readJSONLine(t, reader, &subscribe)
+	writeLine(t, conn, `{"id":2,"method":"mining.authorize","params":["worker.share","x"]}`)
+	var authorize map[string]any
+	readJSONLine(t, reader, &authorize)
+	var difficulty map[string]any
+	readJSONLine(t, reader, &difficulty)
+	var notify map[string]any
+	readJSONLine(t, reader, &notify)
+
+	params := notify["params"].([]any)
+	jobID := params[0].(string)
+	ntime := params[4].(string)
+	nonce := solveShareNonce(t, template.HeaderHex, template.Bits, ntime, provider.shareDiff)
+
+	writeLine(t, conn, fmt.Sprintf(`{"id":3,"method":"mining.submit","params":["worker.share","%s","","%s","%s"]}`, jobID, ntime, nonce))
+	var submit map[string]any
+	readJSONLine(t, reader, &submit)
+	if submit["result"] != true {
+		t.Fatalf("unexpected submit response: %+v", submit)
+	}
+	if provider.blockHex != "" {
+		t.Fatalf("unexpected solved block submission: %s", provider.blockHex)
+	}
+	if provider.accepted != 1 || provider.rejected != 0 || provider.solved != 0 || provider.lastWorker != "worker.share" {
+		t.Fatalf("unexpected share accounting: %+v", provider)
 	}
 }
 
@@ -186,6 +279,34 @@ func solveNonce(t *testing.T, headerHex string, bitsHex string, ntime string) st
 		binary.LittleEndian.PutUint32(header[headerNonceOffset:headerHeightOffset], nonce)
 		hash := blake256.Sum256(header)
 		if hashToBig(hash[:]).Cmp(target) <= 0 {
+			return fmt.Sprintf("%08x", nonce)
+		}
+	}
+}
+
+func solveShareNonce(t *testing.T, headerHex string, bitsHex string, ntime string, shareDiff float64) string {
+	t.Helper()
+	header, err := hex.DecodeString(headerHex)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ntimeVal, err := strconv.ParseUint(ntime, 16, 32)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bitsVal, err := strconv.ParseUint(bitsHex, 16, 32)
+	if err != nil {
+		t.Fatal(err)
+	}
+	binary.LittleEndian.PutUint64(header[headerTimestampOffset:headerBitsOffset], uint64(ntimeVal))
+	binary.LittleEndian.PutUint32(header[headerBitsOffset:headerNonceOffset], uint32(bitsVal))
+	shareTarget := difficultyToTarget(shareDiff)
+	networkTarget := compactToBig(uint32(bitsVal))
+	for nonce := uint32(0); ; nonce++ {
+		binary.LittleEndian.PutUint32(header[headerNonceOffset:headerHeightOffset], nonce)
+		hash := blake256.Sum256(header)
+		value := hashToBig(hash[:])
+		if value.Cmp(shareTarget) <= 0 && value.Cmp(networkTarget) > 0 {
 			return fmt.Sprintf("%08x", nonce)
 		}
 	}

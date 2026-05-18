@@ -9,7 +9,7 @@ This version does four useful things:
 - polls `pacd` for mining, network, and block-template state
 - polls `pacdata` for indexer sync state
 - exposes a small HTTP status surface for pool operations
-- accepts basic Stratum miner sessions and forwards solved block candidates to `pacd`
+- accepts basic Stratum miner sessions, validates shares, and forwards solved block candidates to `pacd`
 
 The Stratum side is intentionally minimal for this stage. It supports:
 
@@ -19,7 +19,7 @@ The Stratum side is intentionally minimal for this stage. It supports:
 - `mining.set_difficulty`
 - `mining.submit`
 
-At the moment, shares are treated as full solved block candidates against the current network target. VarDiff, extranonce fanout, share accounting, payouts, and miner dashboards come next.
+At the moment, the pool uses a fixed share difficulty and keeps in-memory worker stats. VarDiff, extranonce fanout, persistent share accounting, payouts, and miner dashboards come next.
 
 ## Run
 
@@ -28,6 +28,7 @@ go run ./cmd/pacpool \
   --pacd http://127.0.0.1:9509 \
   --pacdata http://127.0.0.1:9609 \
   --miningaddr SYourPoolPayoutAddress \
+  --sharedifficulty 1 \
   --listen 127.0.0.1:9809 \
   --stratumlisten 127.0.0.1:3333
 ```
@@ -43,8 +44,11 @@ go run ./cmd/pacpool \
 `/status` includes pool readiness and live Stratum counters:
 
 - `pool.ready_for_stratum`
+- `pool.share_difficulty`
 - `pool.connected_miners`
 - `pool.active_jobs`
+- `pool.shares`
+- `pool.workers`
 - `pool.template`
 
 ## Development

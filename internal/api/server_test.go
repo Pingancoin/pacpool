@@ -38,8 +38,9 @@ func (fakePACData) Status(context.Context) (upstream.IndexStatus, error) {
 }
 
 func TestServerStatusAndHealth(t *testing.T) {
-	svc := service.New(fakePACD{}, fakePACData{}, time.Second, 500, "SminingAddr")
+	svc := service.New(fakePACD{}, fakePACData{}, time.Second, 500, "SminingAddr", 1.25)
 	svc.Refresh(context.Background())
+	svc.RecordShare("worker.1", true, false, "")
 
 	server := httptest.NewServer(api.New(svc).Handler())
 	defer server.Close()
@@ -48,6 +49,9 @@ func TestServerStatusAndHealth(t *testing.T) {
 	getJSON(t, server.URL+"/status", &status)
 	if !status.Healthy || status.Pool.Name != "pacpool" || status.Network.BestHeight != 20 {
 		t.Fatalf("unexpected status: %+v", status)
+	}
+	if status.Pool.ShareDifficulty != 1.25 || status.Pool.Shares.Accepted != 1 || len(status.Pool.Workers) != 1 {
+		t.Fatalf("unexpected pool share status: %+v", status.Pool)
 	}
 
 	resp, err := http.Get(server.URL + "/healthz")

@@ -23,11 +23,12 @@ func main() {
 	pacdataURL := flag.String("pacdata", "http://127.0.0.1:9609", "pacdata URL")
 	miningAddr := flag.String("miningaddr", "", "pool payout/mining address used for block template requests")
 	stratumListen := flag.String("stratumlisten", "127.0.0.1:3333", "Stratum TCP listen address")
+	shareDiff := flag.Float64("sharedifficulty", 1, "fixed Stratum share difficulty")
 	interval := flag.Duration("interval", 5*time.Second, "upstream refresh interval")
 	feeBPS := flag.Int("feebps", 500, "pool fee in basis points")
 	flag.Parse()
 
-	svc := service.New(upstream.NewPACD(*pacdURL), upstream.NewPACData(*pacdataURL), *interval, *feeBPS, *miningAddr)
+	svc := service.New(upstream.NewPACD(*pacdURL), upstream.NewPACData(*pacdataURL), *interval, *feeBPS, *miningAddr, *shareDiff)
 	server := &http.Server{
 		Addr:              *listen,
 		Handler:           api.New(svc).Handler(),
@@ -56,7 +57,7 @@ func main() {
 	errCh := make(chan error, 1)
 	go func() {
 		log.Printf("pacpool listening on http://%s", *listen)
-		log.Printf("pacpool upstream pacd=%s pacdata=%s miningaddr=%s", *pacdURL, *pacdataURL, *miningAddr)
+		log.Printf("pacpool upstream pacd=%s pacdata=%s miningaddr=%s sharedifficulty=%.4f", *pacdURL, *pacdataURL, *miningAddr, *shareDiff)
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			errCh <- err
 		}
