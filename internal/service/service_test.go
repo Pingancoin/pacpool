@@ -29,6 +29,10 @@ func (f fakePACD) BlockTemplate(context.Context, string) (upstream.BlockTemplate
 	return f.template, f.err
 }
 
+func (f fakePACD) SubmitBlock(context.Context, string) (bool, uint32, string, error) {
+	return true, f.template.Height, f.template.PreviousBlockHash, f.err
+}
+
 type fakePACData struct {
 	status upstream.IndexStatus
 	err    error
@@ -77,5 +81,32 @@ func TestServiceSnapshotUnhealthy(t *testing.T) {
 	snapshot := svc.Snapshot()
 	if snapshot.Healthy || len(snapshot.Errors) == 0 {
 		t.Fatalf("unexpected unhealthy snapshot: %+v", snapshot)
+	}
+}
+
+func TestSetStratumStatsPersistsAcrossRefresh(t *testing.T) {
+	svc := service.New(
+		fakePACD{
+			mining:  upstream.MiningInfo{Network: "simnet", Blocks: 15, NextHeight: 16},
+			network: upstream.NetworkInfo{Network: "simnet", BestHeight: 15, BestBlockHash: "best"},
+			template: upstream.BlockTemplate{
+				Height:            16,
+				PreviousBlockHash: "best",
+				TransactionIDs:    []string{"tx1"},
+			},
+		},
+		fakePACData{
+			status: upstream.IndexStatus{Network: "simnet", IndexedHeight: 15, IndexedHash: "best"},
+		},
+		time.Second,
+		500,
+		"SminingAddr",
+	)
+
+	svc.SetStratumStats(3, 1)
+	svc.Refresh(context.Background())
+	snapshot := svc.Snapshot()
+	if snapshot.Pool.ConnectedMiners != 3 || snapshot.Pool.ActiveJobs != 1 {
+		t.Fatalf("unexpected stratum stats after refresh: %+v", snapshot.Pool)
 	}
 }

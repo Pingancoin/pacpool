@@ -1,16 +1,25 @@
 # pacpool
 
-Minimal Pingancoin pool control plane.
+Minimal Pingancoin pool control plane plus a first Stratum work server.
 
-## Phase 0
+## Current scope
 
-This first phase does three useful things:
+This version does four useful things:
 
-- polls `pacd` for mining and network state
+- polls `pacd` for mining, network, and block-template state
 - polls `pacdata` for indexer sync state
 - exposes a small HTTP status surface for pool operations
+- accepts basic Stratum miner sessions and forwards solved block candidates to `pacd`
 
-It is intentionally the control-plane foundation, not the final miner protocol yet. The next pool step is adding mining work/template RPC in `pacd`, then miner sessions, job broadcast, and share validation in `pacpool`.
+The Stratum side is intentionally minimal for this stage. It supports:
+
+- `mining.subscribe`
+- `mining.authorize`
+- `mining.notify`
+- `mining.set_difficulty`
+- `mining.submit`
+
+At the moment, shares are treated as full solved block candidates against the current network target. VarDiff, extranonce fanout, share accounting, payouts, and miner dashboards come next.
 
 ## Run
 
@@ -19,7 +28,8 @@ go run ./cmd/pacpool \
   --pacd http://127.0.0.1:9509 \
   --pacdata http://127.0.0.1:9609 \
   --miningaddr SYourPoolPayoutAddress \
-  --listen 127.0.0.1:9809
+  --listen 127.0.0.1:9809 \
+  --stratumlisten 127.0.0.1:3333
 ```
 
 ## Routes
@@ -27,6 +37,15 @@ go run ./cmd/pacpool \
 - `/`
 - `/healthz`
 - `/status`
+
+## Status fields
+
+`/status` includes pool readiness and live Stratum counters:
+
+- `pool.ready_for_stratum`
+- `pool.connected_miners`
+- `pool.active_jobs`
+- `pool.template`
 
 ## Development
 

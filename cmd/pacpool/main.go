@@ -13,6 +13,7 @@ import (
 
 	"github.com/Pingancoin/pacpool/internal/api"
 	"github.com/Pingancoin/pacpool/internal/service"
+	"github.com/Pingancoin/pacpool/internal/stratum"
 	"github.com/Pingancoin/pacpool/internal/upstream"
 )
 
@@ -21,6 +22,7 @@ func main() {
 	pacdURL := flag.String("pacd", "http://127.0.0.1:9509", "pacd RPC URL")
 	pacdataURL := flag.String("pacdata", "http://127.0.0.1:9609", "pacdata URL")
 	miningAddr := flag.String("miningaddr", "", "pool payout/mining address used for block template requests")
+	stratumListen := flag.String("stratumlisten", "127.0.0.1:3333", "Stratum TCP listen address")
 	interval := flag.Duration("interval", 5*time.Second, "upstream refresh interval")
 	feeBPS := flag.Int("feebps", 500, "pool fee in basis points")
 	flag.Parse()
@@ -40,6 +42,16 @@ func main() {
 			exit(err)
 		}
 	}()
+
+	if *miningAddr != "" {
+		stratumServer := stratum.New(*stratumListen, svc)
+		go func() {
+			if err := stratumServer.Run(ctx); err != nil {
+				exit(err)
+			}
+		}()
+		log.Printf("pacpool stratum listening on stratum+tcp://%s", *stratumListen)
+	}
 
 	errCh := make(chan error, 1)
 	go func() {

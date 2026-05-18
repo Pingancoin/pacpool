@@ -27,6 +27,10 @@ func (fakePACD) BlockTemplate(context.Context, string) (upstream.BlockTemplate, 
 	return upstream.BlockTemplate{Height: 21, PreviousBlockHash: "best", TransactionIDs: []string{"tx1"}}, nil
 }
 
+func (fakePACD) SubmitBlock(context.Context, string) (bool, uint32, string, error) {
+	return true, 21, "best", nil
+}
+
 type fakePACData struct{}
 
 func (fakePACData) Status(context.Context) (upstream.IndexStatus, error) {

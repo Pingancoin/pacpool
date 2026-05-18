@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -126,7 +127,8 @@ func (c *PACDClient) SubmitBlock(ctx context.Context, blockHex string) (bool, ui
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return false, 0, "", fmt.Errorf("pacd /submitblock returned %s", resp.Status)
+		body, _ := io.ReadAll(resp.Body)
+		return false, 0, "", fmt.Errorf("pacd /submitblock returned %s: %s", resp.Status, strings.TrimSpace(string(body)))
 	}
 	var result struct {
 		Accepted bool   `json:"accepted"`

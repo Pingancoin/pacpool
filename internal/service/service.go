@@ -12,6 +12,7 @@ type PACDSource interface {
 	MiningInfo(context.Context) (upstream.MiningInfo, error)
 	NetworkInfo(context.Context) (upstream.NetworkInfo, error)
 	BlockTemplate(context.Context, string) (upstream.BlockTemplate, error)
+	SubmitBlock(context.Context, string) (bool, uint32, string, error)
 }
 
 type PACDataSource interface {
@@ -25,8 +26,11 @@ type Service struct {
 	feeBPS     int
 	miningAddr string
 
-	mu    sync.RWMutex
-	state State
+	mu               sync.RWMutex
+	state            State
+	lastTemplate     upstream.BlockTemplate
+	stratumConnected int
+	stratumJobs      int
 }
 
 type State struct {
@@ -77,7 +81,8 @@ func New(pacd PACDSource, pacdata PACDataSource, interval time.Duration, feeBPS 
 			MiningAddress:    miningAddr,
 			Notes: []string{
 				"Phase 0 control plane is live.",
-				"Template RPC is wired; next step is miner sessions, job broadcast, and share validation.",
+				"Minimal Stratum work distribution is live.",
+				"Next step is share difficulty, accounting, and payout logic.",
 			},
 		},
 		Errors: make(map[string]string),
@@ -140,6 +145,7 @@ func (s *Service) Refresh(ctx context.Context) {
 	}
 	if s.miningAddr != "" {
 		if templateErr == nil {
+			s.lastTemplate = template
 			s.state.Pool.Template = TemplateState{
 				Available:         true,
 				Height:            template.Height,
@@ -152,12 +158,13 @@ func (s *Service) Refresh(ctx context.Context) {
 			}
 		} else {
 			s.state.Errors["pacd_template"] = templateErr.Error()
+			s.lastTemplate = upstream.BlockTemplate{}
 			s.state.Pool.Template = TemplateState{}
 		}
 	}
 
-	s.state.Pool.ConnectedMiners = 0
-	s.state.Pool.ActiveJobs = 0
+	s.state.Pool.ConnectedMiners = s.stratumConnected
+	s.state.Pool.ActiveJobs = s.stratumJobs
 	s.state.Pool.TemplateBackfill = s.state.Network.BestHeight > 0 && s.state.PACData.IndexedHeight == s.state.Network.BestHeight
 	s.state.Pool.ReadyForStratum = s.miningAddr != "" && s.state.Pool.Template.Available && s.state.Pool.TemplateBackfill
 }
@@ -174,4 +181,29 @@ func (s *Service) Snapshot() State {
 		}
 	}
 	return clone
+}
+
+func (s *Service) CurrentTemplate() (upstream.BlockTemplate, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if !s.state.Pool.Template.Available {
+		return upstream.BlockTemplate{}, false
+	}
+	template := s.lastTemplate
+	template.TransactionIDs = append([]string(nil), template.TransactionIDs...)
+	template.Mutable = append([]string(nil), template.Mutable...)
+	return template, true
+}
+
+func (s *Service) SubmitSolvedBlock(ctx context.Context, blockHex string) (bool, uint32, string, error) {
+	return s.pacd.SubmitBlock(ctx, blockHex)
+}
+
+func (s *Service) SetStratumStats(connected int, jobs int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.stratumConnected = connected
+	s.stratumJobs = jobs
+	s.state.Pool.ConnectedMiners = connected
+	s.state.Pool.ActiveJobs = jobs
 }
