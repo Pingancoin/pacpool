@@ -19,7 +19,7 @@ The Stratum side is intentionally minimal for this stage. It supports:
 - `mining.set_difficulty`
 - `mining.submit`
 
-At the moment, the pool uses a fixed share difficulty and keeps in-memory worker stats. VarDiff, extranonce fanout, persistent share accounting, payouts, and miner dashboards come next.
+At the moment, the pool uses per-worker VarDiff and persists its share ledger on local disk. Extranonce fanout, payouts, and miner dashboards come next.
 
 ## Run
 
@@ -29,6 +29,9 @@ go run ./cmd/pacpool \
   --pacdata http://127.0.0.1:9609 \
   --miningaddr SYourPoolPayoutAddress \
   --sharedifficulty 1 \
+  --vardiff=true \
+  --vardifftarget 15s \
+  --datadir ./data \
   --listen 127.0.0.1:9809 \
   --stratumlisten 127.0.0.1:3333
 ```
@@ -45,10 +48,13 @@ go run ./cmd/pacpool \
 
 - `pool.ready_for_stratum`
 - `pool.share_difficulty`
+- `pool.vardiff_enabled`
+- `pool.vardiff_target_sec`
 - `pool.connected_miners`
 - `pool.active_jobs`
 - `pool.shares`
 - `pool.workers`
+- `pool.ledger_path`
 - `pool.template`
 
 ## Development

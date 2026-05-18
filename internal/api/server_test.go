@@ -38,7 +38,17 @@ func (fakePACData) Status(context.Context) (upstream.IndexStatus, error) {
 }
 
 func TestServerStatusAndHealth(t *testing.T) {
-	svc := service.New(fakePACD{}, fakePACData{}, time.Second, 500, "SminingAddr", 1.25)
+	svc, err := service.New(fakePACD{}, fakePACData{}, service.Options{
+		Interval:      time.Second,
+		FeeBPS:        500,
+		MiningAddr:    "SminingAddr",
+		ShareDiff:     1.25,
+		VarDiff:       true,
+		VarDiffTarget: 15 * time.Second,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	svc.Refresh(context.Background())
 	svc.RecordShare("worker.1", true, false, "")
 

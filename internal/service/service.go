@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"math"
 	"sort"
 	"sync"
 	"time"
@@ -27,8 +28,17 @@ type Service struct {
 	feeBPS     int
 	miningAddr string
 	shareDiff  float64
+	varDiff    bool
+	varTarget  time.Duration
+	varMin     float64
+	varMax     float64
+	dataDir    string
+	ledgerPath string
+	statePath  string
+	now        func() time.Time
 
 	mu               sync.RWMutex
+	persistMu        sync.Mutex
 	state            State
 	lastTemplate     upstream.BlockTemplate
 	stratumConnected int
@@ -51,11 +61,15 @@ type PoolState struct {
 	Version          string        `json:"version"`
 	FeePercent       float64       `json:"fee_percent"`
 	ShareDifficulty  float64       `json:"share_difficulty"`
+	VarDiffEnabled   bool          `json:"vardiff_enabled"`
+	VarDiffTargetSec int64         `json:"vardiff_target_sec"`
 	ConnectedMiners  int           `json:"connected_miners"`
 	ActiveJobs       int           `json:"active_jobs"`
 	ReadyForStratum  bool          `json:"ready_for_stratum"`
 	TemplateBackfill bool          `json:"template_backfill"`
 	MiningAddress    string        `json:"mining_address,omitempty"`
+	LedgerPath       string        `json:"ledger_path,omitempty"`
+	LastLedgerError  string        `json:"last_ledger_error,omitempty"`
 	Template         TemplateState `json:"template"`
 	Shares           ShareState    `json:"shares"`
 	Workers          []WorkerState `json:"workers,omitempty"`
@@ -83,50 +97,89 @@ type ShareState struct {
 }
 
 type WorkerState struct {
-	Name         string    `json:"name"`
-	Difficulty   float64   `json:"difficulty"`
-	Accepted     uint64    `json:"accepted"`
-	Rejected     uint64    `json:"rejected"`
-	SolvedBlocks uint64    `json:"solved_blocks"`
-	LastShareAt  time.Time `json:"last_share_at,omitempty"`
-	LastError    string    `json:"last_error,omitempty"`
+	Name           string    `json:"name"`
+	Difficulty     float64   `json:"difficulty"`
+	Accepted       uint64    `json:"accepted"`
+	Rejected       uint64    `json:"rejected"`
+	SolvedBlocks   uint64    `json:"solved_blocks"`
+	LastShareAt    time.Time `json:"last_share_at,omitempty"`
+	LastAcceptedAt time.Time `json:"last_accepted_at,omitempty"`
+	LastError      string    `json:"last_error,omitempty"`
 }
 
-func New(pacd PACDSource, pacdata PACDataSource, interval time.Duration, feeBPS int, miningAddr string, shareDiff float64) *Service {
-	if interval <= 0 {
-		interval = 5 * time.Second
+type Options struct {
+	Interval      time.Duration
+	FeeBPS        int
+	MiningAddr    string
+	ShareDiff     float64
+	VarDiff       bool
+	VarDiffTarget time.Duration
+	VarDiffMin    float64
+	VarDiffMax    float64
+	DataDir       string
+	Now           func() time.Time
+}
+
+func New(pacd PACDSource, pacdata PACDataSource, opts Options) (*Service, error) {
+	if opts.Interval <= 0 {
+		opts.Interval = 5 * time.Second
 	}
-	if shareDiff <= 0 {
-		shareDiff = 1
+	if opts.ShareDiff <= 0 {
+		opts.ShareDiff = 1
+	}
+	if opts.VarDiffTarget <= 0 {
+		opts.VarDiffTarget = 15 * time.Second
+	}
+	if opts.VarDiffMin <= 0 {
+		opts.VarDiffMin = opts.ShareDiff
+	}
+	if opts.VarDiffMax < opts.VarDiffMin {
+		opts.VarDiffMax = math.Max(opts.VarDiffMin, 1024)
 	}
 	state := State{
 		Pool: PoolState{
 			Name:             "pacpool",
 			Version:          "0.1.0",
-			FeePercent:       float64(feeBPS) / 100,
-			ShareDifficulty:  shareDiff,
+			FeePercent:       float64(opts.FeeBPS) / 100,
+			ShareDifficulty:  opts.ShareDiff,
+			VarDiffEnabled:   opts.VarDiff,
+			VarDiffTargetSec: int64(opts.VarDiffTarget / time.Second),
 			ReadyForStratum:  false,
 			TemplateBackfill: false,
-			MiningAddress:    miningAddr,
+			MiningAddress:    opts.MiningAddr,
 			Notes: []string{
 				"Phase 0 control plane is live.",
 				"Minimal Stratum work distribution is live.",
 				"Per-worker share accounting is live.",
-				"Next step is vardiff, payout logic, and miner dashboards.",
+				"VarDiff and persistent share ledger are live.",
+				"Next step is payout logic and miner dashboards.",
 			},
 		},
 		Errors: make(map[string]string),
 	}
-	return &Service{
+	svc := &Service{
 		pacd:       pacd,
 		pacdata:    pacdata,
-		interval:   interval,
-		feeBPS:     feeBPS,
-		miningAddr: miningAddr,
-		shareDiff:  shareDiff,
+		interval:   opts.Interval,
+		feeBPS:     opts.FeeBPS,
+		miningAddr: opts.MiningAddr,
+		shareDiff:  opts.ShareDiff,
+		varDiff:    opts.VarDiff,
+		varTarget:  opts.VarDiffTarget,
+		varMin:     opts.VarDiffMin,
+		varMax:     opts.VarDiffMax,
+		dataDir:    opts.DataDir,
 		state:      state,
 		workers:    make(map[string]*WorkerState),
+		now:        opts.Now,
 	}
+	if svc.now == nil {
+		svc.now = time.Now
+	}
+	if err := svc.initPersistence(); err != nil {
+		return nil, err
+	}
+	return svc, nil
 }
 
 func (s *Service) Run(ctx context.Context) error {
@@ -157,7 +210,7 @@ func (s *Service) Refresh(ctx context.Context) {
 	defer s.mu.Unlock()
 
 	s.state.Errors = make(map[string]string)
-	s.state.UpdatedAt = time.Now().UTC()
+	s.state.UpdatedAt = s.now().UTC()
 	s.state.Healthy = miningErr == nil && networkErr == nil && indexErr == nil && (s.miningAddr == "" || templateErr == nil)
 
 	if miningErr == nil {
@@ -249,9 +302,8 @@ func (s *Service) SetStratumStats(connected int, jobs int) {
 
 func (s *Service) RecordShare(worker string, accepted bool, solved bool, reason string) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 
-	now := time.Now().UTC()
+	now := s.now().UTC()
 	if worker == "" {
 		worker = "anonymous"
 	}
@@ -264,11 +316,14 @@ func (s *Service) RecordShare(worker string, accepted bool, solved bool, reason 
 		s.workers[worker] = ws
 	}
 	ws.LastShareAt = now
-	ws.Difficulty = s.shareDiff
 	if accepted {
 		s.state.Pool.Shares.Accepted++
 		s.state.Pool.Shares.LastAcceptedAt = now
 		ws.Accepted++
+		if s.varDiff && !ws.LastAcceptedAt.IsZero() {
+			ws.Difficulty = adjustDifficulty(ws.Difficulty, now.Sub(ws.LastAcceptedAt), s.varTarget, s.varMin, s.varMax)
+		}
+		ws.LastAcceptedAt = now
 		ws.LastError = ""
 	} else {
 		s.state.Pool.Shares.Rejected++
@@ -281,7 +336,21 @@ func (s *Service) RecordShare(worker string, accepted bool, solved bool, reason 
 		s.state.Pool.Shares.LastSolvedAt = now
 		ws.SolvedBlocks++
 	}
+	if ws.Difficulty <= 0 {
+		ws.Difficulty = s.shareDiff
+	}
 	s.state.Pool.Workers = s.sortedWorkersLocked()
+	snapshot := s.shareSnapshotLocked()
+	event := ShareEvent{
+		Timestamp:  now,
+		Worker:     ws.Name,
+		Difficulty: ws.Difficulty,
+		Accepted:   accepted,
+		Solved:     solved,
+		Reason:     reason,
+	}
+	s.mu.Unlock()
+	s.persistShareUpdate(event, snapshot)
 }
 
 func (s *Service) sortedWorkersLocked() []WorkerState {
@@ -299,4 +368,42 @@ func (s *Service) sortedWorkersLocked() []WorkerState {
 		return workers[i].Name < workers[j].Name
 	})
 	return workers
+}
+
+func (s *Service) WorkerDifficulty(worker string) float64 {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.workerDifficultyLocked(worker)
+}
+
+func (s *Service) workerDifficultyLocked(worker string) float64 {
+	if worker == "" {
+		return s.shareDiff
+	}
+	if ws, ok := s.workers[worker]; ok && ws.Difficulty > 0 {
+		return ws.Difficulty
+	}
+	return s.shareDiff
+}
+
+func adjustDifficulty(current float64, elapsed time.Duration, target time.Duration, minDiff float64, maxDiff float64) float64 {
+	if current <= 0 {
+		current = minDiff
+	}
+	if target <= 0 {
+		return current
+	}
+	next := current
+	if elapsed < target/2 {
+		next = current * 2
+	} else if elapsed > target*2 {
+		next = current / 2
+	}
+	if next < minDiff {
+		next = minDiff
+	}
+	if next > maxDiff {
+		next = maxDiff
+	}
+	return next
 }

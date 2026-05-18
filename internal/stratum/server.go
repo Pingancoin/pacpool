@@ -23,6 +23,7 @@ type TemplateProvider interface {
 	CurrentTemplate() (upstream.BlockTemplate, bool)
 	SubmitSolvedBlock(context.Context, string) (bool, uint32, string, error)
 	ShareDifficulty() float64
+	WorkerDifficulty(worker string) float64
 	SetStratumStats(connected int, jobs int)
 	RecordShare(worker string, accepted bool, solved bool, reason string)
 }
@@ -75,6 +76,7 @@ type session struct {
 	subscribed bool
 	authorized bool
 	worker     string
+	difficulty float64
 }
 
 func New(listen string, svc TemplateProvider) *Server {
@@ -153,9 +155,14 @@ func (s *Server) updateJob(template upstream.BlockTemplate) {
 	}
 	s.job = job
 	s.svc.SetStratumStats(len(s.sessions), 1)
-	shareDiff := s.svc.ShareDifficulty()
 	for sess := range s.sessions {
 		if sess.authorized && sess.subscribed {
+			shareDiff := s.svc.ShareDifficulty()
+			if sess.difficulty > 0 {
+				shareDiff = sess.difficulty
+			} else if sess.worker != "" {
+				shareDiff = s.svc.WorkerDifficulty(sess.worker)
+			}
 			_ = sess.sendDifficulty(shareDiff)
 			_ = sess.sendNotify(job, true)
 		}
@@ -237,11 +244,12 @@ func (sess *session) handle(ctx context.Context, req request) error {
 			_ = json.Unmarshal(req.Params[0], &sess.worker)
 		}
 		sess.authorized = true
+		sess.difficulty = sess.server.svc.WorkerDifficulty(sess.worker)
 		if err := sess.sendResponse(response{ID: req.ID, Result: true, Error: nil}); err != nil {
 			return err
 		}
 		if job := sess.server.currentJob(); job != nil && sess.subscribed {
-			if err := sess.sendDifficulty(sess.server.svc.ShareDifficulty()); err != nil {
+			if err := sess.sendDifficulty(sess.difficulty); err != nil {
 				return err
 			}
 			return sess.sendNotify(job, true)
@@ -323,7 +331,7 @@ func (sess *session) handleSubmit(ctx context.Context, req request) error {
 	}
 	if hashValue.Cmp(networkTarget) > 0 {
 		sess.server.svc.RecordShare(worker, true, false, "")
-		return sess.sendResponse(response{ID: req.ID, Result: true, Error: nil})
+		return sess.sendAccepted(req.ID, worker, false)
 	}
 	accepted, height, blockHash, err := sess.server.svc.SubmitSolvedBlock(ctx, hex.EncodeToString(blockBytes))
 	if err != nil {
@@ -333,7 +341,10 @@ func (sess *session) handleSubmit(ctx context.Context, req request) error {
 	sess.server.svc.RecordShare(worker, accepted, accepted, "")
 	_ = height
 	_ = blockHash
-	return sess.sendResponse(response{ID: req.ID, Result: accepted, Error: nil})
+	if !accepted {
+		return sess.sendResponse(response{ID: req.ID, Result: false, Error: nil})
+	}
+	return sess.sendAccepted(req.ID, worker, true)
 }
 
 func (sess *session) sendDifficulty(difficulty float64) error {
@@ -368,6 +379,18 @@ func (sess *session) sendResponse(resp response) error {
 	encoded = append(encoded, '\n')
 	_, err = sess.conn.Write(encoded)
 	return err
+}
+
+func (sess *session) sendAccepted(id any, worker string, solved bool) error {
+	if err := sess.sendResponse(response{ID: id, Result: true, Error: nil}); err != nil {
+		return err
+	}
+	nextDiff := sess.server.svc.WorkerDifficulty(worker)
+	if nextDiff <= 0 || nearlyEqual(nextDiff, sess.difficulty) {
+		return nil
+	}
+	sess.difficulty = nextDiff
+	return sess.sendDifficulty(nextDiff)
 }
 
 func compactToBig(compact uint32) *big.Int {
@@ -410,4 +433,12 @@ func difficultyToTarget(difficulty float64) *big.Int {
 		return base
 	}
 	return target
+}
+
+func nearlyEqual(a float64, b float64) bool {
+	diff := a - b
+	if diff < 0 {
+		diff = -diff
+	}
+	return diff < 0.000001
 }

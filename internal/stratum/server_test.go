@@ -46,6 +46,10 @@ func (f *fakeSvc) ShareDifficulty() float64 {
 	return f.shareDiff
 }
 
+func (f *fakeSvc) WorkerDifficulty(string) float64 {
+	return f.ShareDifficulty()
+}
+
 func (f *fakeSvc) SetStratumStats(connected int, jobs int) {
 	f.connected = connected
 	f.activeJobs = jobs
@@ -56,6 +60,9 @@ func (f *fakeSvc) RecordShare(worker string, accepted bool, solved bool, reason 
 	f.lastReason = reason
 	if accepted {
 		f.accepted++
+		if f.shareDiff > 0 {
+			f.shareDiff *= 2
+		}
 	} else {
 		f.rejected++
 	}
@@ -132,6 +139,11 @@ func TestSubscribeAuthorizeAndSubmit(t *testing.T) {
 	if submit["result"] != true {
 		t.Fatalf("unexpected submit response: %+v", submit)
 	}
+	var difficultyUpdate map[string]any
+	readJSONLine(t, reader, &difficultyUpdate)
+	if difficultyUpdate["method"] != "mining.set_difficulty" {
+		t.Fatalf("unexpected post-submit difficulty message: %+v", difficultyUpdate)
+	}
 	if provider.connected != 1 || provider.activeJobs != 1 {
 		t.Fatalf("unexpected stratum stats: connected=%d jobs=%d", provider.connected, provider.activeJobs)
 	}
@@ -206,6 +218,11 @@ func TestSubmitAcceptsShareWithoutBlockSolve(t *testing.T) {
 	readJSONLine(t, reader, &submit)
 	if submit["result"] != true {
 		t.Fatalf("unexpected submit response: %+v", submit)
+	}
+	var difficultyUpdate map[string]any
+	readJSONLine(t, reader, &difficultyUpdate)
+	if difficultyUpdate["method"] != "mining.set_difficulty" {
+		t.Fatalf("unexpected post-submit difficulty message: %+v", difficultyUpdate)
 	}
 	if provider.blockHex != "" {
 		t.Fatalf("unexpected solved block submission: %s", provider.blockHex)
