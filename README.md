@@ -73,3 +73,9 @@ accidentally marked paid without an operator-supplied transaction id.
 go test ./...
 go build ./...
 ```
+
+## Deployment
+
+Production deployment templates live under `deploy/`. The default shape keeps
+the HTTP control API local-only, exposes Stratum on a dedicated TCP port, and
+blocks public access to payout execution at the reverse proxy layer.

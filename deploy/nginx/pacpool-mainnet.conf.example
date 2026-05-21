@@ -1,0 +1,56 @@
+# Pingancoin pool operations reverse proxy.
+#
+# Keep Stratum on its own TCP port, usually 3333/tcp. This nginx site is only
+# for read-only operational HTTP status. Do not expose /payouts/execute through
+# a public proxy unless it is additionally protected by network policy.
+
+server {
+    listen 80;
+    listen [::]:80;
+    server_name pool.pingancoin.org;
+
+    access_log /var/log/nginx/pacpool-access.log;
+    error_log /var/log/nginx/pacpool-error.log;
+
+    client_max_body_size 1m;
+
+    add_header X-Content-Type-Options nosniff always;
+    add_header X-Frame-Options DENY always;
+    add_header Referrer-Policy no-referrer-when-downgrade always;
+
+    location = / {
+        proxy_pass http://127.0.0.1:9809/;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    location = /healthz {
+        proxy_pass http://127.0.0.1:9809/healthz;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    location = /status {
+        proxy_pass http://127.0.0.1:9809/status;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    location = /payouts {
+        proxy_pass http://127.0.0.1:9809/payouts;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    location /payouts/execute {
+        return 404;
+    }
+}

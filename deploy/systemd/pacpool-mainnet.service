@@ -1,0 +1,34 @@
+[Unit]
+Description=Pingancoin pacpool mainnet pool service
+After=network-online.target pacd-mainnet.service pacdata-mainnet.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pacpool
+Group=pacpool
+EnvironmentFile=/etc/pingancoin/pacpool-mainnet.env
+ExecStart=/usr/local/bin/pacpool \
+  --pacd=${PACPOOL_PACD_URL} \
+  --pacdata=${PACPOOL_PACDATA_URL} \
+  --miningaddr=${PACPOOL_MINING_ADDRESS} \
+  --listen=${PACPOOL_LISTEN} \
+  --stratumlisten=${PACPOOL_STRATUM_LISTEN} \
+  --sharedifficulty=${PACPOOL_SHARE_DIFFICULTY} \
+  --vardiff=${PACPOOL_VARDIFF} \
+  --vardifftarget=${PACPOOL_VARDIFF_TARGET} \
+  --datadir=${PACPOOL_DATADIR} \
+  --interval=${PACPOOL_INTERVAL} \
+  --feebps=${PACPOOL_FEE_BPS} \
+  --admintoken=${PACPOOL_ADMIN_TOKEN}
+Restart=on-failure
+RestartSec=5
+LimitNOFILE=65535
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/pacpool
+
+[Install]
+WantedBy=multi-user.target
