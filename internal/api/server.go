@@ -3,19 +3,30 @@ package api
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 
 	"github.com/Pingancoin/pacpool/internal/service"
 )
 
-type Server struct {
-	service *service.Service
-	mux     *http.ServeMux
+type Options struct {
+	AdminToken string
 }
 
-func New(svc *service.Service) *Server {
+type Server struct {
+	service    *service.Service
+	mux        *http.ServeMux
+	adminToken string
+}
+
+func New(svc *service.Service, opts ...Options) *Server {
+	var options Options
+	if len(opts) > 0 {
+		options = opts[0]
+	}
 	s := &Server{
-		service: svc,
-		mux:     http.NewServeMux(),
+		service:    svc,
+		mux:        http.NewServeMux(),
+		adminToken: strings.TrimSpace(options.AdminToken),
 	}
 	s.mux.HandleFunc("/", s.handleIndex)
 	s.mux.HandleFunc("/healthz", s.handleHealth)
@@ -81,12 +92,20 @@ func (s *Server) handlePayoutExecute(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 		return
 	}
+	if !s.authorizedAdmin(r) {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "admin token required"})
+		return
+	}
 	var req struct {
 		TxID string `json:"txid"`
 		Note string `json:"note"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid payout request"})
+		return
+	}
+	if strings.TrimSpace(req.TxID) == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "txid required"})
 		return
 	}
 	record, ok := s.service.ExecutePayouts(req.TxID, req.Note)
@@ -99,6 +118,21 @@ func (s *Server) handlePayoutExecute(w http.ResponseWriter, r *http.Request) {
 		"payment":  record,
 		"status":   s.service.Snapshot().Pool,
 	})
+}
+
+func (s *Server) authorizedAdmin(r *http.Request) bool {
+	if s.adminToken == "" {
+		return true
+	}
+	if token := strings.TrimSpace(r.Header.Get("X-PACPOOL-Admin-Token")); token != "" {
+		return token == s.adminToken
+	}
+	const bearerPrefix = "Bearer "
+	auth := r.Header.Get("Authorization")
+	if strings.HasPrefix(auth, bearerPrefix) {
+		return strings.TrimSpace(strings.TrimPrefix(auth, bearerPrefix)) == s.adminToken
+	}
+	return false
 }
 
 func writeJSON(w http.ResponseWriter, status int, value any) {

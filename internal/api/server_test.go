@@ -140,6 +140,90 @@ func TestPayoutExecute(t *testing.T) {
 	}
 }
 
+func TestPayoutExecuteRequiresAdminTokenWhenConfigured(t *testing.T) {
+	pacdTemplate := upstream.BlockTemplate{Height: 21}
+	pacdTemplate.NextSubsidy.Miner = 100
+	svc, err := service.New(fakePACD{
+		mining:   upstream.MiningInfo{Network: "simnet", Blocks: 20, NextHeight: 21},
+		network:  upstream.NetworkInfo{Network: "simnet", BestHeight: 20, BestBlockHash: "best"},
+		template: pacdTemplate,
+	}, fakePACData{}, service.Options{
+		Interval:   time.Second,
+		FeeBPS:     500,
+		MiningAddr: "SminingAddr",
+		ShareDiff:  1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc.Refresh(context.Background())
+	svc.RecordShare("worker.1", true, true, "")
+	svc.RecordSolvedBlock("worker.1", 21, "block21")
+
+	server := httptest.NewServer(api.New(svc, api.Options{AdminToken: "secret"}).Handler())
+	defer server.Close()
+
+	body := bytes.NewBufferString(`{"txid":"tx123"}`)
+	resp, err := http.Post(server.URL+"/payouts/execute", "application/json", body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("unauthorized execute returned %s", resp.Status)
+	}
+
+	reqBody := bytes.NewBufferString(`{"txid":"tx123"}`)
+	req, err := http.NewRequest(http.MethodPost, server.URL+"/payouts/execute", reqBody)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer secret")
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("authorized execute returned %s", resp.Status)
+	}
+}
+
+func TestPayoutExecuteRequiresTxID(t *testing.T) {
+	pacdTemplate := upstream.BlockTemplate{Height: 21}
+	pacdTemplate.NextSubsidy.Miner = 100
+	svc, err := service.New(fakePACD{
+		mining:   upstream.MiningInfo{Network: "simnet", Blocks: 20, NextHeight: 21},
+		network:  upstream.NetworkInfo{Network: "simnet", BestHeight: 20, BestBlockHash: "best"},
+		template: pacdTemplate,
+	}, fakePACData{}, service.Options{
+		Interval:   time.Second,
+		FeeBPS:     500,
+		MiningAddr: "SminingAddr",
+		ShareDiff:  1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc.Refresh(context.Background())
+	svc.RecordShare("worker.1", true, true, "")
+	svc.RecordSolvedBlock("worker.1", 21, "block21")
+
+	server := httptest.NewServer(api.New(svc).Handler())
+	defer server.Close()
+
+	body := bytes.NewBufferString(`{"note":"missing txid"}`)
+	resp, err := http.Post(server.URL+"/payouts/execute", "application/json", body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("missing txid returned %s", resp.Status)
+	}
+}
+
 func getJSON(t *testing.T, url string, dest any) {
 	t.Helper()
 	resp, err := http.Get(url)

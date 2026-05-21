@@ -32,9 +32,14 @@ go run ./cmd/pacpool \
   --vardiff=true \
   --vardifftarget 15s \
   --datadir ./data \
+  --admintoken "$PACPOOL_ADMIN_TOKEN" \
   --listen 127.0.0.1:9809 \
   --stratumlisten 127.0.0.1:3333
 ```
+
+Set `PACPOOL_ADMIN_TOKEN` in production. `/payouts/execute` requires the token
+when configured and refuses empty `txid` values, so payout batches cannot be
+accidentally marked paid without an operator-supplied transaction id.
 
 ## Routes
 

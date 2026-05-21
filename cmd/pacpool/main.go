@@ -29,6 +29,7 @@ func main() {
 	dataDir := flag.String("datadir", "./data", "pool data directory for persistent share ledger")
 	interval := flag.Duration("interval", 5*time.Second, "upstream refresh interval")
 	feeBPS := flag.Int("feebps", 500, "pool fee in basis points")
+	adminToken := flag.String("admintoken", os.Getenv("PACPOOL_ADMIN_TOKEN"), "admin token required for payout execution; defaults to PACPOOL_ADMIN_TOKEN")
 	flag.Parse()
 
 	svc, err := service.New(upstream.NewPACD(*pacdURL), upstream.NewPACData(*pacdataURL), service.Options{
@@ -45,7 +46,7 @@ func main() {
 	}
 	server := &http.Server{
 		Addr:              *listen,
-		Handler:           api.New(svc).Handler(),
+		Handler:           api.New(svc, api.Options{AdminToken: *adminToken}).Handler(),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
