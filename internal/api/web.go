@@ -44,6 +44,12 @@ type dashboardCopy struct {
 	Explorer          string
 	PoolStatus        string
 	Payouts           string
+	MiningGuide       string
+	MiningURL         string
+	MiningUsername    string
+	MiningPassword    string
+	MiningExample     string
+	MiningPasswordAny string
 	MinerLookup       string
 	MinerAddress      string
 	Lookup            string
@@ -83,6 +89,8 @@ type dashboardView struct {
 	APIURL         string
 	StatusURL      string
 	PayoutsURL     string
+	MiningURL      string
+	UsernameSample string
 	MinerQuery     string
 	MinerSearched  bool
 	MinerFound     bool
@@ -189,6 +197,9 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
     .linkrow { display: flex; justify-content: space-between; gap: 12px; border-bottom: 1px solid var(--line); padding-bottom: 8px; }
     .linkrow:last-child { border-bottom: 0; padding-bottom: 0; }
     .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+    .guide { display: grid; grid-template-columns: repeat(3, minmax(160px, 1fr)); gap: 12px; }
+    .guide-item { background: var(--panel-soft); border: 1px solid var(--line); border-radius: 8px; padding: 13px; min-width: 0; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; word-break: break-all; }
     .miner-search { display: grid; grid-template-columns: minmax(220px, 1fr) auto; gap: 10px; margin-bottom: 14px; }
     input, button {
       min-height: 38px;
@@ -214,7 +225,7 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
     .empty { color: var(--muted); padding: 18px 0 4px; }
     footer { margin-top: 18px; color: var(--muted); font-size: 13px; }
     @media (max-width: 860px) {
-      header, .hero, .grid { grid-template-columns: 1fr; display: grid; }
+      header, .hero, .grid, .guide { grid-template-columns: 1fr; display: grid; }
       header { gap: 12px; }
       .langs { justify-content: flex-start; }
       .metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -268,6 +279,16 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
           <p class="note">{{.Copy.Updated}} {{.Updated}}</p>
         </div>
       </aside>
+    </section>
+
+    <section class="panel" style="margin-bottom:16px">
+      <h2>{{.Copy.MiningGuide}}</h2>
+      <div class="guide">
+        <div class="guide-item"><div class="label">{{.Copy.MiningURL}}</div><div class="mono">{{.MiningURL}}</div></div>
+        <div class="guide-item"><div class="label">{{.Copy.MiningUsername}}</div><div class="mono">{{.UsernameSample}}</div></div>
+        <div class="guide-item"><div class="label">{{.Copy.MiningPassword}}</div><div>{{.Copy.MiningPasswordAny}}</div></div>
+      </div>
+      <p class="note">{{.Copy.MiningExample}}</p>
     </section>
 
     <section class="panel" style="margin-bottom:16px">
@@ -366,6 +387,8 @@ func renderDashboard(w http.ResponseWriter, r *http.Request, svc *service.Servic
 		APIURL:         "https://api.pingancoin.org/status",
 		StatusURL:      "/status",
 		PayoutsURL:     "/payouts",
+		MiningURL:      "stratum+tcp://stratum.pingancoin.org:3333",
+		UsernameSample: "PYourWalletAddress.rig01",
 		MinerQuery:     minerQuery,
 		MinerSearched:  minerQuery != "",
 		MinerFound:     minerFound,
@@ -433,6 +456,12 @@ func dashboardCopyFor(lang string) dashboardCopy {
 		Explorer:          "Explorer",
 		PoolStatus:        "Pool status",
 		Payouts:           "Payouts",
+		MiningGuide:       "How to connect miners",
+		MiningURL:         "Stratum URL",
+		MiningUsername:    "Username",
+		MiningPassword:    "Password",
+		MiningExample:     "Use your own PAC wallet address as the username. Add a dot and rig name to distinguish machines.",
+		MiningPasswordAny: "Any value is accepted.",
 		MinerLookup:       "Miner lookup",
 		MinerAddress:      "Enter payout address",
 		Lookup:            "Lookup",
@@ -486,6 +515,12 @@ func dashboardCopyFor(lang string) dashboardCopy {
 		base.Explorer = "区块浏览器"
 		base.PoolStatus = "矿池状态"
 		base.Payouts = "结算信息"
+		base.MiningGuide = "矿工接入方式"
+		base.MiningURL = "接入地址"
+		base.MiningUsername = "用户名"
+		base.MiningPassword = "密码"
+		base.MiningExample = "用户名填写自己的 PAC 钱包地址；多台矿机可在地址后加点号和矿工名区分。"
+		base.MiningPasswordAny = "任意填写即可。"
 		base.MinerLookup = "矿工查询"
 		base.MinerAddress = "输入收款钱包地址"
 		base.Lookup = "查询"
@@ -533,6 +568,12 @@ func dashboardCopyFor(lang string) dashboardCopy {
 		base.Explorer = "エクスプローラー"
 		base.PoolStatus = "プール状態"
 		base.Payouts = "支払い"
+		base.MiningGuide = "マイナー接続方法"
+		base.MiningURL = "Stratum URL"
+		base.MiningUsername = "ユーザー名"
+		base.MiningPassword = "パスワード"
+		base.MiningExample = "ユーザー名には自分の PAC ウォレットアドレスを使い、ドットとリグ名で機器を区別できます。"
+		base.MiningPasswordAny = "任意の値で構いません。"
 		base.MinerLookup = "マイナー検索"
 		base.MinerAddress = "支払い先アドレスを入力"
 		base.Lookup = "検索"
@@ -580,6 +621,12 @@ func dashboardCopyFor(lang string) dashboardCopy {
 		base.Explorer = "탐색기"
 		base.PoolStatus = "풀 상태"
 		base.Payouts = "지급"
+		base.MiningGuide = "채굴기 접속 방법"
+		base.MiningURL = "Stratum URL"
+		base.MiningUsername = "사용자 이름"
+		base.MiningPassword = "비밀번호"
+		base.MiningExample = "사용자 이름은 본인의 PAC 지갑 주소를 사용하고, 점과 장비 이름을 붙여 구분할 수 있습니다."
+		base.MiningPasswordAny = "아무 값이나 사용할 수 있습니다."
 		base.MinerLookup = "채굴자 조회"
 		base.MinerAddress = "지급 주소 입력"
 		base.Lookup = "조회"

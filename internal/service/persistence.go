@@ -44,8 +44,60 @@ func (s *Service) initPersistence() error {
 	}
 	s.ledgerPath = filepath.Join(s.dataDir, "share-events.jsonl")
 	s.statePath = filepath.Join(s.dataDir, "share-state.json")
+	s.settingsPath = filepath.Join(s.dataDir, "runtime-settings.json")
 	s.state.Pool.LedgerPath = s.ledgerPath
+	if err := s.loadRuntimeSettings(); err != nil {
+		return err
+	}
 	return s.loadShareState()
+}
+
+func (s *Service) loadRuntimeSettings() error {
+	if s.settingsPath == "" {
+		return nil
+	}
+	data, err := os.ReadFile(s.settingsPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	var settings AdminSettings
+	if err := json.Unmarshal(data, &settings); err != nil {
+		return fmt.Errorf("decode runtime settings: %w", err)
+	}
+	if settings.FeeBPS < 0 || settings.FeeBPS > 5000 {
+		return fmt.Errorf("runtime settings fee bps out of range: %d", settings.FeeBPS)
+	}
+	if settings.PayoutMin < 0 {
+		return fmt.Errorf("runtime settings payout minimum cannot be negative")
+	}
+	s.feeBPS = settings.FeeBPS
+	s.autoPayout = settings.AutoPayoutEnabled
+	s.payoutMin = settings.PayoutMin
+	s.state.Pool.FeePercent = float64(s.feeBPS) / 100
+	s.state.Pool.AutoPayout.Enabled = s.autoPayout
+	s.state.Pool.AutoPayout.MinAmount = s.payoutMin
+	return nil
+}
+
+func (s *Service) saveRuntimeSettings(settings AdminSettings) error {
+	if s.settingsPath == "" {
+		return nil
+	}
+	s.persistMu.Lock()
+	defer s.persistMu.Unlock()
+	encoded, err := json.MarshalIndent(settings, "", "  ")
+	if err != nil {
+		return err
+	}
+	encoded = append(encoded, '\n')
+	tmpPath := s.settingsPath + ".tmp"
+	if err := os.WriteFile(tmpPath, encoded, 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmpPath, s.settingsPath)
 }
 
 func (s *Service) loadShareState() error {

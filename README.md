@@ -49,6 +49,12 @@ Set `PACPOOL_ADMIN_TOKEN` in production. `/payouts/execute` requires the token
 when configured and refuses empty `txid` values, so payout batches cannot be
 accidentally marked paid without an operator-supplied transaction id.
 
+The admin page is available at `/admin`. Open it with `?token=...` once, using
+`PACPOOL_ADMIN_TOKEN`; the server sets a short-lived admin cookie. The page can
+toggle automatic payouts, update the pool fee percentage, and update the
+per-address payout threshold. Runtime settings are stored under the pool data
+directory in `runtime-settings.json`.
+
 Automatic payouts are disabled by default. To enable them, run `pacwallet` as a
 local-only service on the same host and set:
 
@@ -66,12 +72,19 @@ local-only service on the same host and set:
 Miner usernames are treated as payout addresses. A worker suffix is allowed:
 `P...` and `P....rig01` both pay the `P...` address.
 
+Public dashboard pages show the miner connection format:
+
+- Stratum URL: `stratum+tcp://stratum.pingancoin.org:3333`
+- Username: `PYourWalletAddress.rig01`
+- Password: any value
+
 ## Routes
 
 - `/` dashboard; accepts `?lang=en`, `?lang=zh-CN`, `?lang=ja`, and `?lang=ko`
 - `/healthz`
 - `/status`
 - `/miner/{address}`
+- `/admin`
 - `/payouts`
 - `/payouts/execute`
 

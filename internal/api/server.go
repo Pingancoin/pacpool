@@ -32,6 +32,9 @@ func New(svc *service.Service, opts ...Options) *Server {
 	s.mux.HandleFunc("/healthz", s.handleHealth)
 	s.mux.HandleFunc("/status", s.handleStatus)
 	s.mux.HandleFunc("/miner/", s.handleMiner)
+	s.mux.HandleFunc("/admin", s.handleAdmin)
+	s.mux.HandleFunc("/admin/login", s.handleAdminLogin)
+	s.mux.HandleFunc("/admin/settings", s.handleAdminSettings)
 	s.mux.HandleFunc("/payouts", s.handlePayouts)
 	s.mux.HandleFunc("/payouts/execute", s.handlePayoutExecute)
 	return s
@@ -136,6 +139,18 @@ func (s *Server) authorizedAdmin(r *http.Request) bool {
 	if s.adminToken == "" {
 		return true
 	}
+	if cookie, err := r.Cookie("pacpool_admin"); err == nil && strings.TrimSpace(cookie.Value) == s.adminToken {
+		return true
+	}
+	if token := strings.TrimSpace(r.URL.Query().Get("token")); token != "" {
+		return token == s.adminToken
+	}
+	if r.Method == http.MethodPost {
+		_ = r.ParseForm()
+		if token := strings.TrimSpace(r.FormValue("token")); token != "" {
+			return token == s.adminToken
+		}
+	}
 	if token := strings.TrimSpace(r.Header.Get("X-PACPOOL-Admin-Token")); token != "" {
 		return token == s.adminToken
 	}
@@ -145,6 +160,28 @@ func (s *Server) authorizedAdmin(r *http.Request) bool {
 		return strings.TrimSpace(strings.TrimPrefix(auth, bearerPrefix)) == s.adminToken
 	}
 	return false
+}
+
+func (s *Server) setAdminCookie(w http.ResponseWriter, r *http.Request) {
+	if s.adminToken == "" {
+		return
+	}
+	token := strings.TrimSpace(r.URL.Query().Get("token"))
+	if token == "" && r.Method == http.MethodPost {
+		token = strings.TrimSpace(r.FormValue("token"))
+	}
+	if token != s.adminToken {
+		return
+	}
+	http.SetCookie(w, &http.Cookie{
+		Name:     "pacpool_admin",
+		Value:    s.adminToken,
+		Path:     "/admin",
+		HttpOnly: true,
+		SameSite: http.SameSiteStrictMode,
+		Secure:   r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https"),
+		MaxAge:   12 * 60 * 60,
+	})
 }
 
 func writeJSON(w http.ResponseWriter, status int, value any) {

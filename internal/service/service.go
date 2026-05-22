@@ -40,6 +40,7 @@ type Service struct {
 	dataDir           string
 	ledgerPath        string
 	statePath         string
+	settingsPath      string
 	autoPayout        bool
 	payoutMin         int64
 	payoutEvery       time.Duration
@@ -238,6 +239,19 @@ type Options struct {
 	Now               func() time.Time
 }
 
+type AdminSettings struct {
+	AutoPayoutEnabled bool    `json:"auto_payout_enabled"`
+	FeeBPS            int     `json:"fee_bps"`
+	FeePercent        float64 `json:"fee_percent"`
+	PayoutMin         int64   `json:"payout_min"`
+}
+
+type AdminSettingsUpdate struct {
+	AutoPayoutEnabled *bool
+	FeeBPS            *int
+	PayoutMin         *int64
+}
+
 func New(pacd PACDSource, pacdata PACDataSource, opts Options) (*Service, error) {
 	if opts.Interval <= 0 {
 		opts.Interval = 5 * time.Second
@@ -348,20 +362,15 @@ func (s *Service) Run(ctx context.Context) error {
 	s.Refresh(ctx)
 	ticker := time.NewTicker(s.interval)
 	defer ticker.Stop()
-	var payoutC <-chan time.Time
-	var payoutTicker *time.Ticker
-	if s.autoPayout {
-		payoutTicker = time.NewTicker(s.payoutEvery)
-		defer payoutTicker.Stop()
-		payoutC = payoutTicker.C
-	}
+	payoutTicker := time.NewTicker(s.payoutEvery)
+	defer payoutTicker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return nil
 		case <-ticker.C:
 			s.Refresh(ctx)
-		case <-payoutC:
+		case <-payoutTicker.C:
 			_, _, _ = s.TryAutoPayout(ctx)
 		}
 	}
@@ -506,6 +515,54 @@ func (s *Service) Snapshot() State {
 		}
 	}
 	return clone
+}
+
+func (s *Service) AdminSettings() AdminSettings {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.adminSettingsLocked()
+}
+
+func (s *Service) UpdateAdminSettings(update AdminSettingsUpdate) (AdminSettings, error) {
+	s.mu.Lock()
+	if update.FeeBPS != nil {
+		if *update.FeeBPS < 0 || *update.FeeBPS > 5000 {
+			s.mu.Unlock()
+			return AdminSettings{}, fmt.Errorf("fee bps must be between 0 and 5000")
+		}
+		s.feeBPS = *update.FeeBPS
+		s.state.Pool.FeePercent = float64(s.feeBPS) / 100
+	}
+	if update.PayoutMin != nil {
+		if *update.PayoutMin < 0 {
+			s.mu.Unlock()
+			return AdminSettings{}, fmt.Errorf("payout minimum cannot be negative")
+		}
+		s.payoutMin = *update.PayoutMin
+		s.state.Pool.AutoPayout.MinAmount = s.payoutMin
+		s.state.Pool.PendingPayouts = s.pendingPayoutsLocked()
+		s.state.Pool.Balances = s.balanceEntriesLocked()
+	}
+	if update.AutoPayoutEnabled != nil {
+		s.autoPayout = *update.AutoPayoutEnabled
+		s.state.Pool.AutoPayout.Enabled = s.autoPayout
+	}
+	settings := s.adminSettingsLocked()
+	s.mu.Unlock()
+
+	if err := s.saveRuntimeSettings(settings); err != nil {
+		return AdminSettings{}, err
+	}
+	return settings, nil
+}
+
+func (s *Service) adminSettingsLocked() AdminSettings {
+	return AdminSettings{
+		AutoPayoutEnabled: s.autoPayout,
+		FeeBPS:            s.feeBPS,
+		FeePercent:        float64(s.feeBPS) / 100,
+		PayoutMin:         s.payoutMin,
+	}
 }
 
 func (s *Service) MinerStats(address string) (MinerStats, bool) {

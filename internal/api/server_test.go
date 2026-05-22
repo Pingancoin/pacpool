@@ -120,10 +120,51 @@ func TestDashboardSupportsLanguages(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(body)
-	for _, want := range []string{"Pingancoin 矿池", "简体中文", "日本語", "한국어"} {
+	for _, want := range []string{"Pingancoin 矿池", "简体中文", "日本語", "한국어", "矿工接入方式", "stratum.pingancoin.org:3333", "PYourWalletAddress.rig01"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("dashboard missing %q in %s", want, text)
 		}
+	}
+}
+
+func TestAdminSettingsRequiresTokenAndUpdatesPool(t *testing.T) {
+	svc, err := service.New(fakePACD{}, fakePACData{}, service.Options{
+		Interval:   time.Second,
+		FeeBPS:     500,
+		MiningAddr: "SminingAddr",
+		PayoutMin:  500_000_000,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(api.New(svc, api.Options{AdminToken: "secret"}).Handler())
+	defer server.Close()
+
+	resp, err := http.Get(server.URL + "/admin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("admin without token returned %s", resp.Status)
+	}
+
+	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	}}
+	reqBody := strings.NewReader("auto_payout=1&fee_percent=2.50&payout_min_pac=7.5&token=secret")
+	resp, err = client.Post(server.URL+"/admin/settings", "application/x-www-form-urlencoded", reqBody)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("admin update returned %s", resp.Status)
+	}
+
+	status := svc.Snapshot()
+	if !status.Pool.AutoPayout.Enabled || status.Pool.FeePercent != 2.5 || status.Pool.AutoPayout.MinAmount != 750_000_000 {
+		t.Fatalf("settings not applied: %+v", status.Pool)
 	}
 }
 
