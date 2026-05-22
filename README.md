@@ -19,7 +19,7 @@ The Stratum side is intentionally minimal for this stage. It supports:
 - `mining.set_difficulty`
 - `mining.submit`
 
-At the moment, the pool uses per-worker VarDiff, persists its share ledger on local disk, tracks payout-ready rounds plus found-block attribution, calculates payout previews per solved round, can mark payout batches executed in its ledger, and serves a multilingual miner status dashboard. Extranonce fanout and wallet-linked payout automation come next.
+At the moment, the pool uses per-worker VarDiff, persists its share ledger on local disk, tracks payout-ready rounds plus found-block attribution, calculates payout previews per solved round, can mark payout batches executed in its ledger, serves a multilingual miner status dashboard, and can call a local wallet service for automatic batch payouts. Extranonce fanout and richer miner account pages come next.
 
 ## Run
 
@@ -33,6 +33,8 @@ go run ./cmd/pacpool \
   --vardifftarget 15s \
   --datadir ./data \
   --admintoken "$PACPOOL_ADMIN_TOKEN" \
+  --autopayout=false \
+  --payoutwallet http://127.0.0.1:9810 \
   --listen 127.0.0.1:9809 \
   --stratumlisten 127.0.0.1:3333
 ```
@@ -40,6 +42,19 @@ go run ./cmd/pacpool \
 Set `PACPOOL_ADMIN_TOKEN` in production. `/payouts/execute` requires the token
 when configured and refuses empty `txid` values, so payout batches cannot be
 accidentally marked paid without an operator-supplied transaction id.
+
+Automatic payouts are disabled by default. To enable them, run `pacwallet` as a
+local-only service on the same host and set:
+
+- `PACPOOL_AUTO_PAYOUT=true`
+- `PACPOOL_WALLET_URL=http://127.0.0.1:9810`
+- `PACPOOL_WALLET_TOKEN` if the wallet service is token-protected
+- `PACPOOL_WALLET_PASSPHRASE` only if the hot wallet is encrypted and the host is trusted
+- `PACPOOL_PAYOUT_MIN_ATOMS` to require a minimum total pending batch before sending
+- `PACPOOL_PAYOUT_INTERVAL`, for example `1h`
+
+Miner usernames are treated as payout addresses. A worker suffix is allowed:
+`P...` and `P....rig01` both pay the `P...` address.
 
 ## Routes
 
@@ -64,6 +79,7 @@ accidentally marked paid without an operator-supplied transaction id.
 - `pool.current_round`
 - `pool.recent_rounds`
 - `pool.pending_payouts`
+- `pool.auto_payout`
 - `pool.ledger_path`
 - `pool.template`
 

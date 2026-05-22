@@ -24,23 +24,28 @@ type PACDataSource interface {
 }
 
 type Service struct {
-	pacd       PACDSource
-	pacdata    PACDataSource
-	interval   time.Duration
-	feeBPS     int
-	miningAddr string
-	shareDiff  float64
-	varDiff    bool
-	varTarget  time.Duration
-	varMin     float64
-	varMax     float64
-	dataDir    string
-	ledgerPath string
-	statePath  string
-	now        func() time.Time
+	pacd        PACDSource
+	pacdata     PACDataSource
+	payouts     PayoutSender
+	interval    time.Duration
+	feeBPS      int
+	miningAddr  string
+	shareDiff   float64
+	varDiff     bool
+	varTarget   time.Duration
+	varMin      float64
+	varMax      float64
+	dataDir     string
+	ledgerPath  string
+	statePath   string
+	autoPayout  bool
+	payoutMin   int64
+	payoutEvery time.Duration
+	now         func() time.Time
 
 	mu               sync.RWMutex
 	persistMu        sync.Mutex
+	payoutMu         sync.Mutex
 	state            State
 	lastTemplate     upstream.BlockTemplate
 	stratumConnected int
@@ -49,6 +54,10 @@ type Service struct {
 	nextRoundID      uint64
 	currentRound     RoundState
 	recentRounds     []RoundState
+}
+
+type PayoutSender interface {
+	SendPayouts(context.Context, []PayoutEntry) (string, error)
 }
 
 type State struct {
@@ -83,7 +92,19 @@ type PoolState struct {
 	PendingPayouts   []PayoutEntry   `json:"pending_payouts,omitempty"`
 	Balances         []BalanceEntry  `json:"balances,omitempty"`
 	Payments         []PaymentRecord `json:"payments,omitempty"`
+	AutoPayout       AutoPayoutState `json:"auto_payout"`
 	Notes            []string        `json:"notes"`
+}
+
+type AutoPayoutState struct {
+	Enabled          bool      `json:"enabled"`
+	WalletConfigured bool      `json:"wallet_configured"`
+	MinAmount        int64     `json:"min_amount"`
+	IntervalSec      int64     `json:"interval_sec"`
+	LastAttemptAt    time.Time `json:"last_attempt_at,omitempty"`
+	LastSuccessAt    time.Time `json:"last_success_at,omitempty"`
+	LastTxID         string    `json:"last_txid,omitempty"`
+	LastError        string    `json:"last_error,omitempty"`
 }
 
 type TemplateState struct {
@@ -178,6 +199,10 @@ type Options struct {
 	VarDiffMin    float64
 	VarDiffMax    float64
 	DataDir       string
+	AutoPayout    bool
+	PayoutMin     int64
+	PayoutEvery   time.Duration
+	PayoutSender  PayoutSender
 	Now           func() time.Time
 }
 
@@ -197,6 +222,9 @@ func New(pacd PACDSource, pacdata PACDataSource, opts Options) (*Service, error)
 	if opts.VarDiffMax < opts.VarDiffMin {
 		opts.VarDiffMax = math.Max(opts.VarDiffMin, 1024)
 	}
+	if opts.PayoutEvery <= 0 {
+		opts.PayoutEvery = time.Hour
+	}
 	state := State{
 		Pool: PoolState{
 			Name:             "pacpool",
@@ -208,12 +236,18 @@ func New(pacd PACDSource, pacdata PACDataSource, opts Options) (*Service, error)
 			ReadyForStratum:  false,
 			TemplateBackfill: false,
 			MiningAddress:    opts.MiningAddr,
+			AutoPayout: AutoPayoutState{
+				Enabled:          opts.AutoPayout,
+				WalletConfigured: opts.PayoutSender != nil,
+				MinAmount:        opts.PayoutMin,
+				IntervalSec:      int64(opts.PayoutEvery / time.Second),
+			},
 			Notes: []string{
 				"Phase 0 control plane is live.",
 				"Minimal Stratum work distribution is live.",
 				"Per-worker share accounting is live.",
-				"VarDiff, persistent share ledger, and payout execution are live.",
-				"Next step is miner dashboards and wallet-linked payout automation.",
+				"VarDiff, persistent share ledger, public dashboard, and payout execution are live.",
+				"Wallet-linked automatic payout support is available when configured.",
 			},
 		},
 		Errors: make(map[string]string),
@@ -221,6 +255,7 @@ func New(pacd PACDSource, pacdata PACDataSource, opts Options) (*Service, error)
 	svc := &Service{
 		pacd:        pacd,
 		pacdata:     pacdata,
+		payouts:     opts.PayoutSender,
 		interval:    opts.Interval,
 		feeBPS:      opts.FeeBPS,
 		miningAddr:  opts.MiningAddr,
@@ -230,6 +265,9 @@ func New(pacd PACDSource, pacdata PACDataSource, opts Options) (*Service, error)
 		varMin:      opts.VarDiffMin,
 		varMax:      opts.VarDiffMax,
 		dataDir:     opts.DataDir,
+		autoPayout:  opts.AutoPayout,
+		payoutMin:   opts.PayoutMin,
+		payoutEvery: opts.PayoutEvery,
 		state:       state,
 		workers:     make(map[string]*WorkerState),
 		now:         opts.Now,
@@ -250,14 +288,74 @@ func (s *Service) Run(ctx context.Context) error {
 	s.Refresh(ctx)
 	ticker := time.NewTicker(s.interval)
 	defer ticker.Stop()
+	var payoutC <-chan time.Time
+	var payoutTicker *time.Ticker
+	if s.autoPayout {
+		payoutTicker = time.NewTicker(s.payoutEvery)
+		defer payoutTicker.Stop()
+		payoutC = payoutTicker.C
+	}
 	for {
 		select {
 		case <-ctx.Done():
 			return nil
 		case <-ticker.C:
 			s.Refresh(ctx)
+		case <-payoutC:
+			_, _, _ = s.TryAutoPayout(ctx)
 		}
 	}
+}
+
+func (s *Service) TryAutoPayout(ctx context.Context) (PaymentRecord, bool, error) {
+	if !s.autoPayout {
+		return PaymentRecord{}, false, nil
+	}
+	if s.payouts == nil {
+		err := fmt.Errorf("automatic payout wallet is not configured")
+		s.setAutoPayoutError(err)
+		return PaymentRecord{}, false, err
+	}
+	if !s.payoutMu.TryLock() {
+		return PaymentRecord{}, false, nil
+	}
+	defer s.payoutMu.Unlock()
+
+	payouts, total := s.pendingPayoutBatch()
+	if len(payouts) == 0 || total < s.payoutMin {
+		return PaymentRecord{}, false, nil
+	}
+	s.setAutoPayoutAttempt("")
+	txid, err := s.payouts.SendPayouts(ctx, payouts)
+	if err != nil {
+		s.setAutoPayoutError(err)
+		return PaymentRecord{}, false, err
+	}
+	txid = strings.TrimSpace(txid)
+	if txid == "" {
+		err := fmt.Errorf("automatic payout wallet returned empty txid")
+		s.setAutoPayoutError(err)
+		return PaymentRecord{}, false, err
+	}
+	record, ok := s.ExecutePayouts(txid, "automatic wallet payout")
+	if !ok {
+		err := fmt.Errorf("automatic payout sent tx %s but no pending payouts were available to mark paid", txid)
+		s.setAutoPayoutError(err)
+		return PaymentRecord{}, false, err
+	}
+	s.setAutoPayoutSuccess(txid)
+	return record, true, nil
+}
+
+func (s *Service) pendingPayoutBatch() ([]PayoutEntry, int64) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	payouts := s.pendingPayoutsLocked()
+	var total int64
+	for _, payout := range payouts {
+		total += payout.Amount
+	}
+	return append([]PayoutEntry(nil), payouts...), total
 }
 
 func (s *Service) Refresh(ctx context.Context) {
@@ -733,6 +831,31 @@ func (s *Service) ExecutePayouts(txid string, note string) (PaymentRecord, bool)
 		Reason:    "payout executed",
 	}, snapshot)
 	return record, true
+}
+
+func (s *Service) setAutoPayoutAttempt(lastErr string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.state.Pool.AutoPayout.LastAttemptAt = s.now().UTC()
+	s.state.Pool.AutoPayout.LastError = strings.TrimSpace(lastErr)
+}
+
+func (s *Service) setAutoPayoutError(err error) {
+	if err == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.state.Pool.AutoPayout.LastAttemptAt = s.now().UTC()
+	s.state.Pool.AutoPayout.LastError = err.Error()
+}
+
+func (s *Service) setAutoPayoutSuccess(txid string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.state.Pool.AutoPayout.LastSuccessAt = s.now().UTC()
+	s.state.Pool.AutoPayout.LastTxID = strings.TrimSpace(txid)
+	s.state.Pool.AutoPayout.LastError = ""
 }
 
 func adjustDifficulty(current float64, elapsed time.Duration, target time.Duration, minDiff float64, maxDiff float64) float64 {

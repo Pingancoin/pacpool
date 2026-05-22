@@ -42,6 +42,20 @@ func (f fakePACData) Status(context.Context) (upstream.IndexStatus, error) {
 	return f.status, f.err
 }
 
+type fakePayoutSender struct {
+	txid    string
+	payouts []service.PayoutEntry
+	err     error
+}
+
+func (f *fakePayoutSender) SendPayouts(_ context.Context, payouts []service.PayoutEntry) (string, error) {
+	f.payouts = append([]service.PayoutEntry(nil), payouts...)
+	if f.err != nil {
+		return "", f.err
+	}
+	return f.txid, nil
+}
+
 func TestServiceSnapshotHealthy(t *testing.T) {
 	svc, err := service.New(
 		fakePACD{
@@ -311,5 +325,52 @@ func TestSolvedBlockClosesRoundAndStartsNext(t *testing.T) {
 	}
 	if snapshot.Pool.CurrentRound.ID != round.ID+1 || snapshot.Pool.CurrentRound.AcceptedShares != 0 {
 		t.Fatalf("unexpected next round state: %+v", snapshot.Pool.CurrentRound)
+	}
+}
+
+func TestTryAutoPayoutSendsAndMarksPaid(t *testing.T) {
+	base := time.Date(2026, 5, 18, 13, 0, 0, 0, time.UTC)
+	current := base
+	pacd := fakePACD{
+		template: upstream.BlockTemplate{Height: 200},
+	}
+	pacd.template.NextSubsidy.Miner = 100
+	sender := &fakePayoutSender{txid: "auto-tx"}
+	svc, err := service.New(pacd, fakePACData{}, service.Options{
+		Interval:     time.Second,
+		FeeBPS:       500,
+		MiningAddr:   "SminingAddr",
+		ShareDiff:    1,
+		AutoPayout:   true,
+		PayoutMin:    50,
+		PayoutSender: sender,
+		Now: func() time.Time {
+			return current
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc.Refresh(context.Background())
+	svc.RecordShare("Pminer.worker1", true, true, "")
+	current = current.Add(time.Second)
+	svc.RecordSolvedBlock("Pminer.worker1", 200, "block200")
+
+	record, ok, err := svc.TryAutoPayout(context.Background())
+	if err != nil || !ok {
+		t.Fatalf("auto payout failed: record=%+v ok=%v err=%v", record, ok, err)
+	}
+	if record.TxID != "auto-tx" || record.Total != 95 {
+		t.Fatalf("unexpected automatic payout record: %+v", record)
+	}
+	if len(sender.payouts) != 1 || sender.payouts[0].Worker != "Pminer.worker1" || sender.payouts[0].Amount != 95 {
+		t.Fatalf("unexpected wallet payouts: %+v", sender.payouts)
+	}
+	snapshot := svc.Snapshot()
+	if len(snapshot.Pool.PendingPayouts) != 0 || len(snapshot.Pool.Payments) != 1 {
+		t.Fatalf("unexpected post payout state: %+v", snapshot.Pool)
+	}
+	if snapshot.Pool.AutoPayout.LastTxID != "auto-tx" || snapshot.Pool.AutoPayout.LastError != "" {
+		t.Fatalf("unexpected auto payout status: %+v", snapshot.Pool.AutoPayout)
 	}
 }
