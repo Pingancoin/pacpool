@@ -44,6 +44,16 @@ type dashboardCopy struct {
 	Explorer          string
 	PoolStatus        string
 	Payouts           string
+	MinerLookup       string
+	MinerAddress      string
+	Lookup            string
+	OnlineMachines    string
+	TotalEarned       string
+	TotalPaid         string
+	TodayEarned       string
+	Unpaid            string
+	NoMinerData       string
+	LastPayment       string
 	LangEnglish       string
 	LangChinese       string
 	LangJapanese      string
@@ -73,9 +83,18 @@ type dashboardView struct {
 	APIURL         string
 	StatusURL      string
 	PayoutsURL     string
+	MinerQuery     string
+	MinerSearched  bool
+	MinerFound     bool
+	MinerStats     service.MinerStats
+	MinerUnpaid    string
+	MinerPaid      string
+	MinerTotal     string
+	MinerToday     string
+	MinerLastPay   string
 }
 
-var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.FuncMap{"timeText": timeText}).Parse(`<!doctype html>
+var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.FuncMap{"timeText": timeText, "formatPAC": formatPAC}).Parse(`<!doctype html>
 <html lang="{{.Copy.Lang}}">
 <head>
   <meta charset="utf-8">
@@ -170,6 +189,25 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
     .linkrow { display: flex; justify-content: space-between; gap: 12px; border-bottom: 1px solid var(--line); padding-bottom: 8px; }
     .linkrow:last-child { border-bottom: 0; padding-bottom: 0; }
     .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+    .miner-search { display: grid; grid-template-columns: minmax(220px, 1fr) auto; gap: 10px; margin-bottom: 14px; }
+    input, button {
+      min-height: 38px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: var(--panel);
+      color: var(--text);
+      font: inherit;
+    }
+    input { padding: 7px 10px; }
+    button {
+      padding: 7px 15px;
+      background: var(--accent);
+      border-color: var(--accent);
+      color: #fff;
+      font-weight: 650;
+      cursor: pointer;
+    }
+    .miner-metrics { grid-template-columns: repeat(5, minmax(120px, 1fr)); }
     table { width: 100%; border-collapse: collapse; }
     th, td { padding: 10px 8px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
     th { color: var(--muted); font-size: 13px; font-weight: 600; }
@@ -183,7 +221,7 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
     }
     @media (max-width: 520px) {
       .page { width: min(100% - 22px, 1180px); padding-top: 18px; }
-      .metrics { grid-template-columns: 1fr; }
+      .metrics, .miner-metrics, .miner-search { grid-template-columns: 1fr; }
       .panel { padding: 14px; }
       th, td { padding: 8px 5px; font-size: 13px; }
     }
@@ -232,6 +270,29 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
       </aside>
     </section>
 
+    <section class="panel" style="margin-bottom:16px">
+      <h2>{{.Copy.MinerLookup}}</h2>
+      <form method="get" class="miner-search">
+        <input type="hidden" name="lang" value="{{.Copy.Lang}}">
+        <input name="miner" value="{{.MinerQuery}}" placeholder="{{.Copy.MinerAddress}}" autocomplete="off">
+        <button type="submit">{{.Copy.Lookup}}</button>
+      </form>
+      {{if .MinerSearched}}
+        {{if .MinerFound}}
+        <div class="metrics miner-metrics">
+          <div class="metric"><div class="label">{{.Copy.OnlineMachines}}</div><div class="value">{{.MinerStats.OnlineMachines}}</div></div>
+          <div class="metric"><div class="label">{{.Copy.TotalEarned}}</div><div class="value">{{.MinerTotal}}</div></div>
+          <div class="metric"><div class="label">{{.Copy.TotalPaid}}</div><div class="value">{{.MinerPaid}}</div></div>
+          <div class="metric"><div class="label">{{.Copy.TodayEarned}}</div><div class="value">{{.MinerToday}}</div></div>
+          <div class="metric"><div class="label">{{.Copy.Unpaid}}</div><div class="value">{{.MinerUnpaid}}</div></div>
+        </div>
+        <p class="note">{{.Copy.LastPayment}} {{.MinerLastPay}}</p>
+        {{else}}
+        <div class="empty">{{.Copy.NoMinerData}}</div>
+        {{end}}
+      {{end}}
+    </section>
+
     <section class="grid">
       <div class="panel">
         <h2>{{.Copy.Workers}}</h2>
@@ -276,9 +337,15 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
 </body>
 </html>`))
 
-func renderDashboard(w http.ResponseWriter, r *http.Request, status service.State) error {
+func renderDashboard(w http.ResponseWriter, r *http.Request, svc *service.Service) error {
 	lang := dashboardLang(r)
 	copy := dashboardCopyFor(lang)
+	status := svc.Snapshot()
+	minerQuery := strings.TrimSpace(r.URL.Query().Get("miner"))
+	minerStats, minerFound := service.MinerStats{}, false
+	if minerQuery != "" {
+		minerStats, minerFound = svc.MinerStats(minerQuery)
+	}
 	view := dashboardView{
 		Copy:           copy,
 		Status:         status,
@@ -299,6 +366,15 @@ func renderDashboard(w http.ResponseWriter, r *http.Request, status service.Stat
 		APIURL:         "https://api.pingancoin.org/status",
 		StatusURL:      "/status",
 		PayoutsURL:     "/payouts",
+		MinerQuery:     minerQuery,
+		MinerSearched:  minerQuery != "",
+		MinerFound:     minerFound,
+		MinerStats:     minerStats,
+		MinerUnpaid:    formatPAC(minerStats.Unpaid),
+		MinerPaid:      formatPAC(minerStats.Paid),
+		MinerTotal:     formatPAC(minerStats.Total),
+		MinerToday:     formatPAC(minerStats.TodayEarned),
+		MinerLastPay:   timeText(minerStats.LastPaymentAt),
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	return dashboardTemplate.Execute(w, view)
@@ -357,6 +433,16 @@ func dashboardCopyFor(lang string) dashboardCopy {
 		Explorer:          "Explorer",
 		PoolStatus:        "Pool status",
 		Payouts:           "Payouts",
+		MinerLookup:       "Miner lookup",
+		MinerAddress:      "Enter payout address",
+		Lookup:            "Lookup",
+		OnlineMachines:    "Online machines",
+		TotalEarned:       "Total earned",
+		TotalPaid:         "Total paid",
+		TodayEarned:       "Today earned",
+		Unpaid:            "Unpaid",
+		NoMinerData:       "No miner records found for this address.",
+		LastPayment:       "Last payment:",
 		LangEnglish:       "English",
 		LangChinese:       "简体中文",
 		LangJapanese:      "日本語",
@@ -400,6 +486,16 @@ func dashboardCopyFor(lang string) dashboardCopy {
 		base.Explorer = "区块浏览器"
 		base.PoolStatus = "矿池状态"
 		base.Payouts = "结算信息"
+		base.MinerLookup = "矿工查询"
+		base.MinerAddress = "输入收款钱包地址"
+		base.Lookup = "查询"
+		base.OnlineMachines = "在线机器"
+		base.TotalEarned = "累计收益"
+		base.TotalPaid = "已付款"
+		base.TodayEarned = "今日收益"
+		base.Unpaid = "待结算"
+		base.NoMinerData = "没有找到这个地址的矿工记录。"
+		base.LastPayment = "最近付款："
 		base.StratumClosedNote = "矿池收币地址配置完成前，矿工连接入口保持关闭。"
 		base.TemplateReady = "可用"
 		base.TemplateWaiting = "不可用"
@@ -437,6 +533,16 @@ func dashboardCopyFor(lang string) dashboardCopy {
 		base.Explorer = "エクスプローラー"
 		base.PoolStatus = "プール状態"
 		base.Payouts = "支払い"
+		base.MinerLookup = "マイナー検索"
+		base.MinerAddress = "支払い先アドレスを入力"
+		base.Lookup = "検索"
+		base.OnlineMachines = "オンライン台数"
+		base.TotalEarned = "総報酬"
+		base.TotalPaid = "支払済み"
+		base.TodayEarned = "本日の報酬"
+		base.Unpaid = "未払い"
+		base.NoMinerData = "このアドレスのマイナー記録はありません。"
+		base.LastPayment = "最終支払い:"
 		base.StratumClosedNote = "公式プール採掘アドレスが設定されるまで、マイナー接続は閉じたままです。"
 		base.TemplateReady = "利用可能"
 		base.TemplateWaiting = "利用不可"
@@ -474,6 +580,16 @@ func dashboardCopyFor(lang string) dashboardCopy {
 		base.Explorer = "탐색기"
 		base.PoolStatus = "풀 상태"
 		base.Payouts = "지급"
+		base.MinerLookup = "채굴자 조회"
+		base.MinerAddress = "지급 주소 입력"
+		base.Lookup = "조회"
+		base.OnlineMachines = "온라인 장비"
+		base.TotalEarned = "총 수익"
+		base.TotalPaid = "총 지급"
+		base.TodayEarned = "오늘 수익"
+		base.Unpaid = "미지급"
+		base.NoMinerData = "이 주소의 채굴자 기록이 없습니다."
+		base.LastPayment = "마지막 지급:"
 		base.StratumClosedNote = "공식 풀 채굴 주소가 설정될 때까지 채굴자 연결은 닫혀 있습니다."
 		base.TemplateReady = "사용 가능"
 		base.TemplateWaiting = "사용 불가"
@@ -507,4 +623,15 @@ func timeText(t time.Time) string {
 		return "-"
 	}
 	return t.UTC().Format(time.RFC3339)
+}
+
+func formatPAC(atoms int64) string {
+	sign := ""
+	if atoms < 0 {
+		sign = "-"
+		atoms = -atoms
+	}
+	whole := atoms / 100_000_000
+	frac := atoms % 100_000_000
+	return fmt.Sprintf("%s%d.%08d PAC", sign, whole, frac)
 }

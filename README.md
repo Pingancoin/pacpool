@@ -19,7 +19,7 @@ The Stratum side is intentionally minimal for this stage. It supports:
 - `mining.set_difficulty`
 - `mining.submit`
 
-At the moment, the pool uses per-worker VarDiff, persists its share ledger on local disk, tracks payout-ready rounds plus found-block attribution, calculates payout previews per solved round, can mark payout batches executed in its ledger, serves a multilingual miner status dashboard, and can call a local wallet service for automatic batch payouts. Extranonce fanout and richer miner account pages come next.
+At the moment, the pool uses per-worker VarDiff, persists its share ledger on local disk, tracks payout-ready rounds plus found-block attribution, calculates payout previews per solved round, can mark payout batches executed in its ledger, serves a multilingual miner status dashboard with per-address lookup, and can call a local wallet service for scheduled batch payouts. Extranonce fanout remains the next Stratum hardening item.
 
 ## Run
 
@@ -35,6 +35,12 @@ go run ./cmd/pacpool \
   --admintoken "$PACPOOL_ADMIN_TOKEN" \
   --autopayout=false \
   --payoutwallet http://127.0.0.1:9810 \
+  --payoutminatoms 500000000 \
+  --payoutevery 10m \
+  --payoutwindowstart 08:00 \
+  --payoutwindowend 09:00 \
+  --payouttimezone Asia/Shanghai \
+  --payoutbatchlimit 50 \
   --listen 127.0.0.1:9809 \
   --stratumlisten 127.0.0.1:3333
 ```
@@ -50,8 +56,12 @@ local-only service on the same host and set:
 - `PACPOOL_WALLET_URL=http://127.0.0.1:9810`
 - `PACPOOL_WALLET_TOKEN` if the wallet service is token-protected
 - `PACPOOL_WALLET_PASSPHRASE` only if the hot wallet is encrypted and the host is trusted
-- `PACPOOL_PAYOUT_MIN_ATOMS` to require a minimum total pending batch before sending
-- `PACPOOL_PAYOUT_INTERVAL`, for example `1h`
+- `PACPOOL_PAYOUT_MIN_ATOMS=500000000` for a 5 PAC per-address threshold
+- `PACPOOL_PAYOUT_INTERVAL=10m` to retry batches during the payout window
+- `PACPOOL_PAYOUT_WINDOW_START=08:00`
+- `PACPOOL_PAYOUT_WINDOW_END=09:00`
+- `PACPOOL_PAYOUT_TIMEZONE=Asia/Shanghai`
+- `PACPOOL_PAYOUT_BATCH_LIMIT=50`
 
 Miner usernames are treated as payout addresses. A worker suffix is allowed:
 `P...` and `P....rig01` both pay the `P...` address.
@@ -61,6 +71,7 @@ Miner usernames are treated as payout addresses. A worker suffix is allowed:
 - `/` dashboard; accepts `?lang=en`, `?lang=zh-CN`, `?lang=ja`, and `?lang=ko`
 - `/healthz`
 - `/status`
+- `/miner/{address}`
 - `/payouts`
 - `/payouts/execute`
 

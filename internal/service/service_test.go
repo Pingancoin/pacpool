@@ -88,6 +88,38 @@ func TestServiceSnapshotHealthy(t *testing.T) {
 	}
 }
 
+func TestServiceSnapshotReadyAtGenesisHeight(t *testing.T) {
+	svc, err := service.New(
+		fakePACD{
+			mining:  upstream.MiningInfo{Network: "mainnet", Blocks: 0, BestBlockHash: "genesis", NextHeight: 1},
+			network: upstream.NetworkInfo{Network: "mainnet", BestHeight: 0, BestBlockHash: "genesis"},
+			template: upstream.BlockTemplate{
+				Height:            1,
+				PreviousBlockHash: "genesis",
+				TransactionIDs:    []string{"coinbase"},
+			},
+		},
+		fakePACData{
+			status: upstream.IndexStatus{Network: "mainnet", IndexedHeight: 0, IndexedHash: "genesis"},
+		},
+		service.Options{
+			Interval:   time.Second,
+			FeeBPS:     500,
+			MiningAddr: "PpoolAddress",
+			ShareDiff:  1,
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	svc.Refresh(context.Background())
+	snapshot := svc.Snapshot()
+	if !snapshot.Pool.TemplateBackfill || !snapshot.Pool.ReadyForStratum {
+		t.Fatalf("expected genesis-height chain to be stratum-ready: %+v", snapshot.Pool)
+	}
+}
+
 func TestServiceSnapshotUnhealthy(t *testing.T) {
 	svc, err := service.New(
 		fakePACD{err: errors.New("pacd down")},
@@ -136,7 +168,7 @@ func TestSetStratumStatsPersistsAcrossRefresh(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	svc.SetStratumStats(3, 1)
+	svc.SetStratumStats(3, 1, []string{"miner.a", "miner.a", "miner.b"})
 	svc.Refresh(context.Background())
 	snapshot := svc.Snapshot()
 	if snapshot.Pool.ConnectedMiners != 3 || snapshot.Pool.ActiveJobs != 1 {
@@ -337,13 +369,15 @@ func TestTryAutoPayoutSendsAndMarksPaid(t *testing.T) {
 	pacd.template.NextSubsidy.Miner = 100
 	sender := &fakePayoutSender{txid: "auto-tx"}
 	svc, err := service.New(pacd, fakePACData{}, service.Options{
-		Interval:     time.Second,
-		FeeBPS:       500,
-		MiningAddr:   "SminingAddr",
-		ShareDiff:    1,
-		AutoPayout:   true,
-		PayoutMin:    50,
-		PayoutSender: sender,
+		Interval:          time.Second,
+		FeeBPS:            500,
+		MiningAddr:        "SminingAddr",
+		ShareDiff:         1,
+		AutoPayout:        true,
+		PayoutMin:         50,
+		PayoutWindowStart: "00:00",
+		PayoutWindowEnd:   "23:59",
+		PayoutSender:      sender,
 		Now: func() time.Time {
 			return current
 		},
@@ -363,7 +397,7 @@ func TestTryAutoPayoutSendsAndMarksPaid(t *testing.T) {
 	if record.TxID != "auto-tx" || record.Total != 95 {
 		t.Fatalf("unexpected automatic payout record: %+v", record)
 	}
-	if len(sender.payouts) != 1 || sender.payouts[0].Worker != "Pminer.worker1" || sender.payouts[0].Amount != 95 {
+	if len(sender.payouts) != 1 || sender.payouts[0].Worker != "Pminer" || sender.payouts[0].Amount != 95 {
 		t.Fatalf("unexpected wallet payouts: %+v", sender.payouts)
 	}
 	snapshot := svc.Snapshot()
@@ -372,5 +406,72 @@ func TestTryAutoPayoutSendsAndMarksPaid(t *testing.T) {
 	}
 	if snapshot.Pool.AutoPayout.LastTxID != "auto-tx" || snapshot.Pool.AutoPayout.LastError != "" {
 		t.Fatalf("unexpected auto payout status: %+v", snapshot.Pool.AutoPayout)
+	}
+}
+
+func TestPendingPayoutsAggregateByPayoutAddress(t *testing.T) {
+	base := time.Date(2026, 5, 18, 1, 0, 0, 0, time.UTC)
+	current := base
+	pacd := fakePACD{template: upstream.BlockTemplate{Height: 400}}
+	pacd.template.NextSubsidy.Miner = 1_000_000_000
+	svc, err := service.New(pacd, fakePACData{}, service.Options{
+		Interval:   time.Second,
+		FeeBPS:     500,
+		MiningAddr: "SminingAddr",
+		ShareDiff:  1,
+		Now: func() time.Time {
+			return current
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc.Refresh(context.Background())
+	svc.RecordShare("Pminer.rig1", true, false, "")
+	svc.RecordShare("Pminer.rig2", true, true, "")
+	current = current.Add(time.Second)
+	svc.RecordSolvedBlock("Pminer.rig2", 400, "block400")
+
+	snapshot := svc.Snapshot()
+	if len(snapshot.Pool.PendingPayouts) != 1 {
+		t.Fatalf("unexpected payout count: %+v", snapshot.Pool.PendingPayouts)
+	}
+	if snapshot.Pool.PendingPayouts[0].Worker != "Pminer" || snapshot.Pool.PendingPayouts[0].Amount != 950_000_000 {
+		t.Fatalf("unexpected aggregated payout: %+v", snapshot.Pool.PendingPayouts[0])
+	}
+}
+
+func TestMinerStatsUsesPayoutAddressAndOnlineWorkers(t *testing.T) {
+	base := time.Date(2026, 5, 18, 0, 30, 0, 0, time.UTC)
+	current := base
+	pacd := fakePACD{template: upstream.BlockTemplate{Height: 300}}
+	pacd.template.NextSubsidy.Miner = 1_000_000_000
+	svc, err := service.New(pacd, fakePACData{}, service.Options{
+		Interval:   time.Second,
+		FeeBPS:     500,
+		MiningAddr: "SminingAddr",
+		ShareDiff:  1,
+		Now: func() time.Time {
+			return current
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc.Refresh(context.Background())
+	svc.RecordShare("Pminer.worker1", true, true, "")
+	current = current.Add(time.Second)
+	svc.RecordSolvedBlock("Pminer.worker1", 300, "block300")
+	svc.SetStratumStats(2, 1, []string{"Pminer.worker1", "Pminer.worker2"})
+
+	stats, found := svc.MinerStats("Pminer")
+	if !found {
+		t.Fatal("expected miner stats to be found")
+	}
+	if stats.OnlineMachines != 2 || len(stats.Workers) != 2 {
+		t.Fatalf("unexpected online stats: %+v", stats)
+	}
+	if stats.Unpaid != 950_000_000 || stats.TodayEarned != 950_000_000 || stats.Total != 950_000_000 {
+		t.Fatalf("unexpected miner balances: %+v", stats)
 	}
 }

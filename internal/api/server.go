@@ -31,6 +31,7 @@ func New(svc *service.Service, opts ...Options) *Server {
 	s.mux.HandleFunc("/", s.handleIndex)
 	s.mux.HandleFunc("/healthz", s.handleHealth)
 	s.mux.HandleFunc("/status", s.handleStatus)
+	s.mux.HandleFunc("/miner/", s.handleMiner)
 	s.mux.HandleFunc("/payouts", s.handlePayouts)
 	s.mux.HandleFunc("/payouts/execute", s.handlePayoutExecute)
 	return s
@@ -45,7 +46,7 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
 		return
 	}
-	if err := renderDashboard(w, r, s.service.Snapshot()); err != nil {
+	if err := renderDashboard(w, r, s.service); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "dashboard render failed"})
 	}
 }
@@ -65,6 +66,23 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, s.service.Snapshot())
+}
+
+func (s *Server) handleMiner(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	address := strings.TrimSpace(strings.TrimPrefix(r.URL.Path, "/miner/"))
+	if address == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "miner address required"})
+		return
+	}
+	stats, found := s.service.MinerStats(address)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"found": found,
+		"miner": stats,
+	})
 }
 
 func (s *Server) handlePayouts(w http.ResponseWriter, r *http.Request) {

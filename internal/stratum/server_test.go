@@ -28,6 +28,7 @@ type fakeSvc struct {
 	solved      int
 	lastWorker  string
 	lastReason  string
+	workers     []string
 	blockHeight uint32
 	blockHash   string
 }
@@ -52,9 +53,10 @@ func (f *fakeSvc) WorkerDifficulty(string) float64 {
 	return f.ShareDifficulty()
 }
 
-func (f *fakeSvc) SetStratumStats(connected int, jobs int) {
+func (f *fakeSvc) SetStratumStats(connected int, jobs int, workers []string) {
 	f.connected = connected
 	f.activeJobs = jobs
+	f.workers = append([]string(nil), workers...)
 }
 
 func (f *fakeSvc) RecordShare(worker string, accepted bool, solved bool, reason string) {

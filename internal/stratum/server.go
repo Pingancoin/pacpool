@@ -24,7 +24,7 @@ type TemplateProvider interface {
 	SubmitSolvedBlock(context.Context, string) (bool, uint32, string, error)
 	ShareDifficulty() float64
 	WorkerDifficulty(worker string) float64
-	SetStratumStats(connected int, jobs int)
+	SetStratumStats(connected int, jobs int, workerNames []string)
 	RecordShare(worker string, accepted bool, solved bool, reason string)
 	RecordSolvedBlock(worker string, height uint32, hash string)
 }
@@ -143,7 +143,7 @@ func (s *Server) updateJob(template upstream.BlockTemplate) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.job != nil && sameTemplate(s.job.Template, template) {
-		s.svc.SetStratumStats(len(s.sessions), 1)
+		s.publishStatsLocked()
 		return
 	}
 	bits, _ := strconv.ParseUint(template.Bits, 16, 32)
@@ -155,7 +155,7 @@ func (s *Server) updateJob(template upstream.BlockTemplate) {
 		TargetBits: uint32(bits),
 	}
 	s.job = job
-	s.svc.SetStratumStats(len(s.sessions), 1)
+	s.publishStatsLocked()
 	for sess := range s.sessions {
 		if sess.authorized && sess.subscribed {
 			shareDiff := s.svc.ShareDifficulty()
@@ -181,22 +181,28 @@ func (s *Server) addSession(sess *session) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.sessions[sess] = struct{}{}
-	jobCount := 0
-	if s.job != nil {
-		jobCount = 1
-	}
-	s.svc.SetStratumStats(len(s.sessions), jobCount)
+	s.publishStatsLocked()
 }
 
 func (s *Server) removeSession(sess *session) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.sessions, sess)
+	s.publishStatsLocked()
+}
+
+func (s *Server) publishStatsLocked() {
 	jobCount := 0
 	if s.job != nil {
 		jobCount = 1
 	}
-	s.svc.SetStratumStats(len(s.sessions), jobCount)
+	workers := make([]string, 0, len(s.sessions))
+	for sess := range s.sessions {
+		if sess.authorized && sess.worker != "" {
+			workers = append(workers, sess.worker)
+		}
+	}
+	s.svc.SetStratumStats(len(s.sessions), jobCount, workers)
 }
 
 func (s *Server) currentJob() *Job {
@@ -246,6 +252,9 @@ func (sess *session) handle(ctx context.Context, req request) error {
 		}
 		sess.authorized = true
 		sess.difficulty = sess.server.svc.WorkerDifficulty(sess.worker)
+		sess.server.mu.Lock()
+		sess.server.publishStatsLocked()
+		sess.server.mu.Unlock()
 		if err := sess.sendResponse(response{ID: req.ID, Result: true, Error: nil}); err != nil {
 			return err
 		}

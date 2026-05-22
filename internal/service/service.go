@@ -12,6 +12,8 @@ import (
 	"github.com/Pingancoin/pacpool/internal/upstream"
 )
 
+const coin = int64(100_000_000)
+
 type PACDSource interface {
 	MiningInfo(context.Context) (upstream.MiningInfo, error)
 	NetworkInfo(context.Context) (upstream.NetworkInfo, error)
@@ -24,24 +26,28 @@ type PACDataSource interface {
 }
 
 type Service struct {
-	pacd        PACDSource
-	pacdata     PACDataSource
-	payouts     PayoutSender
-	interval    time.Duration
-	feeBPS      int
-	miningAddr  string
-	shareDiff   float64
-	varDiff     bool
-	varTarget   time.Duration
-	varMin      float64
-	varMax      float64
-	dataDir     string
-	ledgerPath  string
-	statePath   string
-	autoPayout  bool
-	payoutMin   int64
-	payoutEvery time.Duration
-	now         func() time.Time
+	pacd              PACDSource
+	pacdata           PACDataSource
+	payouts           PayoutSender
+	interval          time.Duration
+	feeBPS            int
+	miningAddr        string
+	shareDiff         float64
+	varDiff           bool
+	varTarget         time.Duration
+	varMin            float64
+	varMax            float64
+	dataDir           string
+	ledgerPath        string
+	statePath         string
+	autoPayout        bool
+	payoutMin         int64
+	payoutEvery       time.Duration
+	payoutWindowStart string
+	payoutWindowEnd   string
+	payoutLocation    *time.Location
+	payoutBatchLimit  int
+	now               func() time.Time
 
 	mu               sync.RWMutex
 	persistMu        sync.Mutex
@@ -51,6 +57,7 @@ type Service struct {
 	stratumConnected int
 	stratumJobs      int
 	workers          map[string]*WorkerState
+	onlineWorkers    map[string]int
 	nextRoundID      uint64
 	currentRound     RoundState
 	recentRounds     []RoundState
@@ -101,6 +108,10 @@ type AutoPayoutState struct {
 	WalletConfigured bool      `json:"wallet_configured"`
 	MinAmount        int64     `json:"min_amount"`
 	IntervalSec      int64     `json:"interval_sec"`
+	WindowStart      string    `json:"window_start"`
+	WindowEnd        string    `json:"window_end"`
+	Timezone         string    `json:"timezone"`
+	BatchLimit       int       `json:"batch_limit"`
 	LastAttemptAt    time.Time `json:"last_attempt_at,omitempty"`
 	LastSuccessAt    time.Time `json:"last_success_at,omitempty"`
 	LastTxID         string    `json:"last_txid,omitempty"`
@@ -137,6 +148,8 @@ type WorkerState struct {
 	LastShareAt    time.Time `json:"last_share_at,omitempty"`
 	LastAcceptedAt time.Time `json:"last_accepted_at,omitempty"`
 	LastError      string    `json:"last_error,omitempty"`
+	Online         bool      `json:"online"`
+	OnlineMachines int       `json:"online_machines,omitempty"`
 }
 
 type RoundState struct {
@@ -170,6 +183,7 @@ type PayoutEntry struct {
 	Worker string  `json:"worker"`
 	Amount int64   `json:"amount"`
 	Work   float64 `json:"work"`
+	Paid   bool    `json:"paid,omitempty"`
 }
 
 type BalanceEntry struct {
@@ -189,21 +203,39 @@ type PaymentRecord struct {
 	Payouts   []PayoutEntry `json:"payouts"`
 }
 
+type MinerStats struct {
+	Address         string          `json:"address"`
+	OnlineMachines  int             `json:"online_machines"`
+	Workers         []WorkerState   `json:"workers"`
+	Unpaid          int64           `json:"unpaid"`
+	Paid            int64           `json:"paid"`
+	Total           int64           `json:"total"`
+	TodayEarned     int64           `json:"today_earned"`
+	PendingPayouts  []PayoutEntry   `json:"pending_payouts,omitempty"`
+	Payments        []PaymentRecord `json:"payments,omitempty"`
+	LastPaymentAt   time.Time       `json:"last_payment_at,omitempty"`
+	LastPaymentTxID string          `json:"last_payment_txid,omitempty"`
+}
+
 type Options struct {
-	Interval      time.Duration
-	FeeBPS        int
-	MiningAddr    string
-	ShareDiff     float64
-	VarDiff       bool
-	VarDiffTarget time.Duration
-	VarDiffMin    float64
-	VarDiffMax    float64
-	DataDir       string
-	AutoPayout    bool
-	PayoutMin     int64
-	PayoutEvery   time.Duration
-	PayoutSender  PayoutSender
-	Now           func() time.Time
+	Interval          time.Duration
+	FeeBPS            int
+	MiningAddr        string
+	ShareDiff         float64
+	VarDiff           bool
+	VarDiffTarget     time.Duration
+	VarDiffMin        float64
+	VarDiffMax        float64
+	DataDir           string
+	AutoPayout        bool
+	PayoutMin         int64
+	PayoutEvery       time.Duration
+	PayoutWindowStart string
+	PayoutWindowEnd   string
+	PayoutTimezone    string
+	PayoutBatchLimit  int
+	PayoutSender      PayoutSender
+	Now               func() time.Time
 }
 
 func New(pacd PACDSource, pacdata PACDataSource, opts Options) (*Service, error) {
@@ -225,6 +257,25 @@ func New(pacd PACDSource, pacdata PACDataSource, opts Options) (*Service, error)
 	if opts.PayoutEvery <= 0 {
 		opts.PayoutEvery = time.Hour
 	}
+	if opts.PayoutMin <= 0 {
+		opts.PayoutMin = 5 * coin
+	}
+	if strings.TrimSpace(opts.PayoutWindowStart) == "" {
+		opts.PayoutWindowStart = "08:00"
+	}
+	if strings.TrimSpace(opts.PayoutWindowEnd) == "" {
+		opts.PayoutWindowEnd = "09:00"
+	}
+	if strings.TrimSpace(opts.PayoutTimezone) == "" {
+		opts.PayoutTimezone = "Asia/Shanghai"
+	}
+	payoutLocation, err := time.LoadLocation(opts.PayoutTimezone)
+	if err != nil {
+		return nil, fmt.Errorf("payout timezone: %w", err)
+	}
+	if opts.PayoutBatchLimit <= 0 {
+		opts.PayoutBatchLimit = 50
+	}
 	state := State{
 		Pool: PoolState{
 			Name:             "pacpool",
@@ -241,6 +292,10 @@ func New(pacd PACDSource, pacdata PACDataSource, opts Options) (*Service, error)
 				WalletConfigured: opts.PayoutSender != nil,
 				MinAmount:        opts.PayoutMin,
 				IntervalSec:      int64(opts.PayoutEvery / time.Second),
+				WindowStart:      opts.PayoutWindowStart,
+				WindowEnd:        opts.PayoutWindowEnd,
+				Timezone:         opts.PayoutTimezone,
+				BatchLimit:       opts.PayoutBatchLimit,
 			},
 			Notes: []string{
 				"Phase 0 control plane is live.",
@@ -253,25 +308,30 @@ func New(pacd PACDSource, pacdata PACDataSource, opts Options) (*Service, error)
 		Errors: make(map[string]string),
 	}
 	svc := &Service{
-		pacd:        pacd,
-		pacdata:     pacdata,
-		payouts:     opts.PayoutSender,
-		interval:    opts.Interval,
-		feeBPS:      opts.FeeBPS,
-		miningAddr:  opts.MiningAddr,
-		shareDiff:   opts.ShareDiff,
-		varDiff:     opts.VarDiff,
-		varTarget:   opts.VarDiffTarget,
-		varMin:      opts.VarDiffMin,
-		varMax:      opts.VarDiffMax,
-		dataDir:     opts.DataDir,
-		autoPayout:  opts.AutoPayout,
-		payoutMin:   opts.PayoutMin,
-		payoutEvery: opts.PayoutEvery,
-		state:       state,
-		workers:     make(map[string]*WorkerState),
-		now:         opts.Now,
-		nextRoundID: 1,
+		pacd:              pacd,
+		pacdata:           pacdata,
+		payouts:           opts.PayoutSender,
+		interval:          opts.Interval,
+		feeBPS:            opts.FeeBPS,
+		miningAddr:        opts.MiningAddr,
+		shareDiff:         opts.ShareDiff,
+		varDiff:           opts.VarDiff,
+		varTarget:         opts.VarDiffTarget,
+		varMin:            opts.VarDiffMin,
+		varMax:            opts.VarDiffMax,
+		dataDir:           opts.DataDir,
+		autoPayout:        opts.AutoPayout,
+		payoutMin:         opts.PayoutMin,
+		payoutEvery:       opts.PayoutEvery,
+		payoutWindowStart: opts.PayoutWindowStart,
+		payoutWindowEnd:   opts.PayoutWindowEnd,
+		payoutLocation:    payoutLocation,
+		payoutBatchLimit:  opts.PayoutBatchLimit,
+		state:             state,
+		workers:           make(map[string]*WorkerState),
+		onlineWorkers:     make(map[string]int),
+		now:               opts.Now,
+		nextRoundID:       1,
 	}
 	if svc.now == nil {
 		svc.now = time.Now
@@ -321,6 +381,9 @@ func (s *Service) TryAutoPayout(ctx context.Context) (PaymentRecord, bool, error
 	}
 	defer s.payoutMu.Unlock()
 
+	if !s.inPayoutWindow(s.now()) {
+		return PaymentRecord{}, false, nil
+	}
 	payouts, total := s.pendingPayoutBatch()
 	if len(payouts) == 0 || total < s.payoutMin {
 		return PaymentRecord{}, false, nil
@@ -337,7 +400,7 @@ func (s *Service) TryAutoPayout(ctx context.Context) (PaymentRecord, bool, error
 		s.setAutoPayoutError(err)
 		return PaymentRecord{}, false, err
 	}
-	record, ok := s.ExecutePayouts(txid, "automatic wallet payout")
+	record, ok := s.ExecutePayoutBatch(txid, "automatic wallet payout", payouts)
 	if !ok {
 		err := fmt.Errorf("automatic payout sent tx %s but no pending payouts were available to mark paid", txid)
 		s.setAutoPayoutError(err)
@@ -350,12 +413,20 @@ func (s *Service) TryAutoPayout(ctx context.Context) (PaymentRecord, bool, error
 func (s *Service) pendingPayoutBatch() ([]PayoutEntry, int64) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	payouts := s.pendingPayoutsLocked()
+	all := s.pendingPayoutsLocked()
+	payouts := make([]PayoutEntry, 0, len(all))
 	var total int64
-	for _, payout := range payouts {
+	for _, payout := range all {
+		if payout.Amount < s.payoutMin {
+			continue
+		}
+		payouts = append(payouts, payout)
 		total += payout.Amount
+		if s.payoutBatchLimit > 0 && len(payouts) >= s.payoutBatchLimit {
+			break
+		}
 	}
-	return append([]PayoutEntry(nil), payouts...), total
+	return payouts, total
 }
 
 func (s *Service) Refresh(ctx context.Context) {
@@ -412,7 +483,8 @@ func (s *Service) Refresh(ctx context.Context) {
 
 	s.state.Pool.ConnectedMiners = s.stratumConnected
 	s.state.Pool.ActiveJobs = s.stratumJobs
-	s.state.Pool.TemplateBackfill = s.state.Network.BestHeight > 0 && s.state.PACData.IndexedHeight == s.state.Network.BestHeight
+	s.state.Pool.TemplateBackfill = s.state.PACData.IndexedHeight == s.state.Network.BestHeight &&
+		s.state.PACData.IndexedHash == s.state.Network.BestBlockHash
 	s.state.Pool.ReadyForStratum = s.miningAddr != "" && s.state.Pool.Template.Available && s.state.Pool.TemplateBackfill
 }
 
@@ -434,6 +506,84 @@ func (s *Service) Snapshot() State {
 		}
 	}
 	return clone
+}
+
+func (s *Service) MinerStats(address string) (MinerStats, bool) {
+	address = strings.TrimSpace(address)
+	if address == "" {
+		return MinerStats{}, false
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	stats := MinerStats{Address: address}
+	nowLocal := s.now().In(s.payoutLocation)
+	year, month, day := nowLocal.Date()
+	todayStart := time.Date(year, month, day, 0, 0, 0, 0, s.payoutLocation)
+	seenWorkers := make(map[string]struct{})
+	for _, worker := range s.sortedWorkersLocked() {
+		if payoutAddressFromWorker(worker.Name) != address {
+			continue
+		}
+		stats.Workers = append(stats.Workers, worker)
+		seenWorkers[worker.Name] = struct{}{}
+	}
+	for worker, count := range s.onlineWorkers {
+		if payoutAddressFromWorker(worker) != address {
+			continue
+		}
+		stats.OnlineMachines += count
+		if _, ok := seenWorkers[worker]; !ok {
+			stats.Workers = append(stats.Workers, WorkerState{
+				Name:           worker,
+				Difficulty:     s.shareDiff,
+				Online:         count > 0,
+				OnlineMachines: count,
+			})
+		}
+	}
+	sort.Slice(stats.Workers, func(i, j int) bool { return stats.Workers[i].Name < stats.Workers[j].Name })
+	for _, round := range s.recentRounds {
+		for _, payout := range round.Payouts {
+			if payoutAddressFromWorker(payout.Worker) != address {
+				continue
+			}
+			if round.Paid || payout.Paid {
+				stats.Paid += payout.Amount
+			} else {
+				stats.Unpaid += payout.Amount
+				stats.PendingPayouts = append(stats.PendingPayouts, payout)
+			}
+			if !round.EndedAt.IsZero() && !round.EndedAt.In(s.payoutLocation).Before(todayStart) {
+				stats.TodayEarned += payout.Amount
+			}
+		}
+	}
+	stats.Total = stats.Paid + stats.Unpaid
+	for _, payment := range s.state.Pool.Payments {
+		var matched PaymentRecord
+		for _, payout := range payment.Payouts {
+			if payoutAddressFromWorker(payout.Worker) != address {
+				continue
+			}
+			matched.ID = payment.ID
+			matched.CreatedAt = payment.CreatedAt
+			matched.TxID = payment.TxID
+			matched.Note = payment.Note
+			matched.Rounds = append([]uint64(nil), payment.Rounds...)
+			matched.Payouts = append(matched.Payouts, payout)
+			matched.Total += payout.Amount
+		}
+		if len(matched.Payouts) == 0 {
+			continue
+		}
+		stats.Payments = append(stats.Payments, matched)
+		if stats.LastPaymentAt.IsZero() || matched.CreatedAt.After(stats.LastPaymentAt) {
+			stats.LastPaymentAt = matched.CreatedAt
+			stats.LastPaymentTxID = matched.TxID
+		}
+	}
+	return stats, len(stats.Workers) > 0 || stats.Total > 0 || len(stats.Payments) > 0
 }
 
 func (s *Service) CurrentTemplate() (upstream.BlockTemplate, bool) {
@@ -458,13 +608,26 @@ func (s *Service) ShareDifficulty() float64 {
 	return s.shareDiff
 }
 
-func (s *Service) SetStratumStats(connected int, jobs int) {
+func (s *Service) SetStratumStats(connected int, jobs int, workerNames []string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.stratumConnected = connected
 	s.stratumJobs = jobs
+	s.onlineWorkers = make(map[string]int)
+	for _, worker := range workerNames {
+		worker = strings.TrimSpace(worker)
+		if worker == "" {
+			continue
+		}
+		s.onlineWorkers[worker]++
+		if ws, ok := s.workers[worker]; ok {
+			ws.Online = true
+			ws.OnlineMachines = s.onlineWorkers[worker]
+		}
+	}
 	s.state.Pool.ConnectedMiners = connected
 	s.state.Pool.ActiveJobs = jobs
+	s.state.Pool.Workers = s.sortedWorkersLocked()
 }
 
 func (s *Service) RecordShare(worker string, accepted bool, solved bool, reason string) {
@@ -531,7 +694,10 @@ func (s *Service) RecordShare(worker string, accepted bool, solved bool, reason 
 func (s *Service) sortedWorkersLocked() []WorkerState {
 	workers := make([]WorkerState, 0, len(s.workers))
 	for _, worker := range s.workers {
-		workers = append(workers, *worker)
+		clone := *worker
+		clone.OnlineMachines = s.onlineWorkers[clone.Name]
+		clone.Online = clone.OnlineMachines > 0
+		workers = append(workers, clone)
 	}
 	sort.Slice(workers, func(i, j int) bool {
 		if workers[i].SolvedBlocks != workers[j].SolvedBlocks {
@@ -727,10 +893,17 @@ func (s *Service) pendingPayoutsLocked() []PayoutEntry {
 			continue
 		}
 		for _, payout := range round.Payouts {
-			entry, ok := totals[payout.Worker]
+			if payout.Paid {
+				continue
+			}
+			address := payoutAddressFromWorker(payout.Worker)
+			if address == "" {
+				continue
+			}
+			entry, ok := totals[address]
 			if !ok {
-				entry = &PayoutEntry{Worker: payout.Worker}
-				totals[payout.Worker] = entry
+				entry = &PayoutEntry{Worker: address}
+				totals[address] = entry
 			}
 			entry.Amount += payout.Amount
 			entry.Work += payout.Work
@@ -757,12 +930,16 @@ func (s *Service) balanceEntriesLocked() []BalanceEntry {
 	entries := make(map[string]*totals)
 	for _, round := range s.recentRounds {
 		for _, payout := range round.Payouts {
-			entry, ok := entries[payout.Worker]
+			address := payoutAddressFromWorker(payout.Worker)
+			if address == "" {
+				continue
+			}
+			entry, ok := entries[address]
 			if !ok {
 				entry = &totals{}
-				entries[payout.Worker] = entry
+				entries[address] = entry
 			}
-			if round.Paid {
+			if round.Paid || payout.Paid {
 				entry.paid += payout.Amount
 			} else {
 				entry.unpaid += payout.Amount
@@ -792,12 +969,24 @@ func (s *Service) balanceEntriesLocked() []BalanceEntry {
 
 func (s *Service) ExecutePayouts(txid string, note string) (PaymentRecord, bool) {
 	s.mu.Lock()
-
 	payouts := s.pendingPayoutsLocked()
 	if len(payouts) == 0 {
 		s.mu.Unlock()
 		return PaymentRecord{}, false
 	}
+	return s.executePayoutsLocked(txid, note, payouts)
+}
+
+func (s *Service) ExecutePayoutBatch(txid string, note string, payouts []PayoutEntry) (PaymentRecord, bool) {
+	s.mu.Lock()
+	if len(payouts) == 0 {
+		s.mu.Unlock()
+		return PaymentRecord{}, false
+	}
+	return s.executePayoutsLocked(txid, note, payouts)
+}
+
+func (s *Service) executePayoutsLocked(txid string, note string, payouts []PayoutEntry) (PaymentRecord, bool) {
 	now := s.now().UTC()
 	record := PaymentRecord{
 		ID:        fmt.Sprintf("pay-%d", now.UnixNano()),
@@ -806,16 +995,38 @@ func (s *Service) ExecutePayouts(txid string, note string) (PaymentRecord, bool)
 		Note:      strings.TrimSpace(note),
 		Payouts:   append([]PayoutEntry(nil), payouts...),
 	}
+	selected := make(map[string]struct{}, len(payouts))
 	for _, payout := range payouts {
 		record.Total += payout.Amount
+		if address := payoutAddressFromWorker(payout.Worker); address != "" {
+			selected[address] = struct{}{}
+		}
 	}
+	touchedRounds := make(map[uint64]struct{})
 	for i := range s.recentRounds {
 		if !s.recentRounds[i].Solved || s.recentRounds[i].Paid {
 			continue
 		}
-		s.recentRounds[i].Paid = true
-		record.Rounds = append(record.Rounds, s.recentRounds[i].ID)
+		for j := range s.recentRounds[i].Payouts {
+			if s.recentRounds[i].Payouts[j].Paid {
+				continue
+			}
+			address := payoutAddressFromWorker(s.recentRounds[i].Payouts[j].Worker)
+			if _, ok := selected[address]; ok {
+				s.recentRounds[i].Payouts[j].Paid = true
+				touchedRounds[s.recentRounds[i].ID] = struct{}{}
+			}
+		}
+		s.recentRounds[i].Paid = roundFullyPaid(s.recentRounds[i])
 	}
+	if len(touchedRounds) == 0 {
+		s.mu.Unlock()
+		return PaymentRecord{}, false
+	}
+	for roundID := range touchedRounds {
+		record.Rounds = append(record.Rounds, roundID)
+	}
+	sort.Slice(record.Rounds, func(i, j int) bool { return record.Rounds[i] < record.Rounds[j] })
 	s.state.Pool.Payments = append([]PaymentRecord{record}, s.state.Pool.Payments...)
 	if len(s.state.Pool.Payments) > 50 {
 		s.state.Pool.Payments = s.state.Pool.Payments[:50]
@@ -831,6 +1042,57 @@ func (s *Service) ExecutePayouts(txid string, note string) (PaymentRecord, bool)
 		Reason:    "payout executed",
 	}, snapshot)
 	return record, true
+}
+
+func roundFullyPaid(round RoundState) bool {
+	if !round.Solved || len(round.Payouts) == 0 {
+		return false
+	}
+	for _, payout := range round.Payouts {
+		if payout.Amount > 0 && !payout.Paid {
+			return false
+		}
+	}
+	return true
+}
+
+func (s *Service) inPayoutWindow(t time.Time) bool {
+	start, ok := parseClock(s.payoutWindowStart)
+	if !ok {
+		return true
+	}
+	end, ok := parseClock(s.payoutWindowEnd)
+	if !ok {
+		return true
+	}
+	local := t.In(s.payoutLocation)
+	minute := local.Hour()*60 + local.Minute()
+	if start <= end {
+		return minute >= start && minute < end
+	}
+	return minute >= start || minute < end
+}
+
+func parseClock(value string) (int, bool) {
+	var hour, minute int
+	if _, err := fmt.Sscanf(strings.TrimSpace(value), "%d:%d", &hour, &minute); err != nil {
+		return 0, false
+	}
+	if hour < 0 || hour > 23 || minute < 0 || minute > 59 {
+		return 0, false
+	}
+	return hour*60 + minute, true
+}
+
+func payoutAddressFromWorker(worker string) string {
+	worker = strings.TrimSpace(worker)
+	if worker == "" {
+		return ""
+	}
+	if beforeDot, _, ok := strings.Cut(worker, "."); ok {
+		return strings.TrimSpace(beforeDot)
+	}
+	return worker
 }
 
 func (s *Service) setAutoPayoutAttempt(lastErr string) {
