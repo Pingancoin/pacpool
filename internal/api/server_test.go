@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -88,6 +90,40 @@ func TestServerStatusAndHealth(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("health returned %s", resp.Status)
+	}
+}
+
+func TestDashboardSupportsLanguages(t *testing.T) {
+	svc, err := service.New(fakePACD{}, fakePACData{}, service.Options{
+		Interval:   time.Second,
+		FeeBPS:     500,
+		MiningAddr: "SminingAddr",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc.Refresh(context.Background())
+
+	server := httptest.NewServer(api.New(svc).Handler())
+	defer server.Close()
+
+	resp, err := http.Get(server.URL + "/?lang=zh-CN")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if got := resp.Header.Get("Content-Type"); !strings.Contains(got, "text/html") {
+		t.Fatalf("dashboard content type = %q, want html", got)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(body)
+	for _, want := range []string{"Pingancoin 矿池", "简体中文", "日本語", "한국어"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("dashboard missing %q in %s", want, text)
+		}
 	}
 }
 

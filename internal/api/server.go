@@ -45,15 +45,9 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"service": "pacpool",
-		"routes": []string{
-			"/healthz",
-			"/status",
-			"/payouts",
-			"/payouts/execute",
-		},
-	})
+	if err := renderDashboard(w, r, s.service.Snapshot()); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "dashboard render failed"})
+	}
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {

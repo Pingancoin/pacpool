@@ -8,7 +8,7 @@ This version does four useful things:
 
 - polls `pacd` for mining, network, and block-template state
 - polls `pacdata` for indexer sync state
-- exposes a small HTTP status surface for pool operations
+- exposes a small HTTP status surface plus a public dashboard for pool operations
 - accepts basic Stratum miner sessions, validates shares, and forwards solved block candidates to `pacd`
 
 The Stratum side is intentionally minimal for this stage. It supports:
@@ -19,7 +19,7 @@ The Stratum side is intentionally minimal for this stage. It supports:
 - `mining.set_difficulty`
 - `mining.submit`
 
-At the moment, the pool uses per-worker VarDiff, persists its share ledger on local disk, tracks payout-ready rounds plus found-block attribution, calculates payout previews per solved round, and can mark payout batches executed in its ledger. Extranonce fanout, wallet-linked payout automation, and miner dashboards come next.
+At the moment, the pool uses per-worker VarDiff, persists its share ledger on local disk, tracks payout-ready rounds plus found-block attribution, calculates payout previews per solved round, can mark payout batches executed in its ledger, and serves a multilingual miner status dashboard. Extranonce fanout and wallet-linked payout automation come next.
 
 ## Run
 
@@ -43,7 +43,7 @@ accidentally marked paid without an operator-supplied transaction id.
 
 ## Routes
 
-- `/`
+- `/` dashboard; accepts `?lang=en`, `?lang=zh-CN`, `?lang=ja`, and `?lang=ko`
 - `/healthz`
 - `/status`
 - `/payouts`
