@@ -23,6 +23,10 @@ The Stratum side is intentionally minimal for this stage. It supports:
 - `mining.set_difficulty`
 - `mining.submit`
 
+`mining.notify` keeps the first six compatibility fields stable and appends a
+PAC extension field at index 6: the 88-byte block header hex that miners hash
+with BLAKE-256.
+
 At the moment, the pool uses per-worker VarDiff, persists its share ledger on local disk, tracks payout-ready rounds plus found-block attribution, calculates payout previews per solved round, can mark payout batches executed in its ledger, serves a multilingual miner status dashboard with per-address lookup, and can call a local wallet service for scheduled batch payouts. Extranonce fanout remains the next Stratum hardening item.
 
 ## Run

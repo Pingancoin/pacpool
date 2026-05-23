@@ -78,6 +78,7 @@ type session struct {
 	authorized bool
 	worker     string
 	difficulty float64
+	fixedDiff  bool
 }
 
 func New(listen string, svc TemplateProvider) *Server {
@@ -261,9 +262,11 @@ func (sess *session) handle(ctx context.Context, req request) error {
 			_ = json.Unmarshal(req.Params[0], &sess.worker)
 		}
 		sess.authorized = true
-		workerDiff := sess.server.svc.WorkerDifficulty(sess.worker)
-		if workerDiff > sess.difficulty {
-			sess.difficulty = workerDiff
+		if !sess.fixedDiff {
+			workerDiff := sess.server.svc.WorkerDifficulty(sess.worker)
+			if workerDiff > sess.difficulty {
+				sess.difficulty = workerDiff
+			}
 		}
 		sess.server.mu.Lock()
 		sess.server.publishStatsLocked()
@@ -289,6 +292,7 @@ func (sess *session) handle(ctx context.Context, req request) error {
 					suggested = base
 				}
 				sess.difficulty = suggested
+				sess.fixedDiff = true
 			}
 		}
 		if err := sess.sendResponse(response{ID: req.ID, Result: true, Error: nil}); err != nil {
@@ -421,6 +425,7 @@ func (sess *session) sendNotify(job *Job, clean bool) error {
 			job.Template.Bits,
 			ntime,
 			clean,
+			job.HeaderHex,
 		},
 	})
 }
@@ -440,6 +445,9 @@ func (sess *session) sendResponse(resp response) error {
 func (sess *session) sendAccepted(id any, worker string, solved bool) error {
 	if err := sess.sendResponse(response{ID: id, Result: true, Error: nil}); err != nil {
 		return err
+	}
+	if sess.fixedDiff {
+		return nil
 	}
 	nextDiff := sess.server.svc.WorkerDifficulty(worker)
 	if nextDiff <= 0 || nearlyEqual(nextDiff, sess.difficulty) {

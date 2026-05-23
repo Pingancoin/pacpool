@@ -141,6 +141,9 @@ func TestSubscribeAuthorizeAndSubmit(t *testing.T) {
 	params := notify["params"].([]any)
 	jobID := params[0].(string)
 	ntime := params[4].(string)
+	if got := params[6].(string); got != template.HeaderHex {
+		t.Fatalf("notify headerhex = %q, want %q", got, template.HeaderHex)
+	}
 	nonce := solveNonce(t, template.HeaderHex, template.Bits, ntime)
 
 	writeLine(t, conn, fmt.Sprintf(`{"id":3,"method":"mining.submit","params":["worker","%s","","%s","%s"]}`, jobID, ntime, nonce))
@@ -224,6 +227,9 @@ func TestSubmitAcceptsShareWithoutBlockSolve(t *testing.T) {
 	params := notify["params"].([]any)
 	jobID := params[0].(string)
 	ntime := params[4].(string)
+	if got := params[6].(string); got != template.HeaderHex {
+		t.Fatalf("notify headerhex = %q, want %q", got, template.HeaderHex)
+	}
 	nonce := solveShareNonce(t, template.HeaderHex, template.Bits, ntime, provider.shareDiff)
 
 	writeLine(t, conn, fmt.Sprintf(`{"id":3,"method":"mining.submit","params":["worker.share","%s","","%s","%s"]}`, jobID, ntime, nonce))
@@ -375,6 +381,83 @@ func TestSuggestedDifficultySurvivesAuthorize(t *testing.T) {
 	readJSONLine(t, reader, &authorizedDiff)
 	if authorizedDiff["params"].([]any)[0].(float64) != 4 {
 		t.Fatalf("authorize overwrote suggested difficulty: %+v", authorizedDiff)
+	}
+}
+
+func TestSuggestedDifficultySurvivesAcceptedShare(t *testing.T) {
+	header := make([]byte, headerLength)
+	binary.LittleEndian.PutUint64(header[headerTimestampOffset:headerBitsOffset], 1)
+	binary.LittleEndian.PutUint32(header[headerBitsOffset:headerNonceOffset], 0x206bc47f)
+	binary.LittleEndian.PutUint32(header[headerHeightOffset:headerLength], 20)
+	block := append(append([]byte(nil), header...), 0x00)
+	template := upstream.BlockTemplate{
+		Height:            20,
+		PreviousBlockHash: strings.Repeat("8", 64),
+		Bits:              "206bc47f",
+		Timestamp:         1,
+		CoinbaseTxID:      strings.Repeat("9", 64),
+		HeaderHex:         hex.EncodeToString(header),
+		BlockHex:          hex.EncodeToString(block),
+	}
+	provider := &fakeSvc{template: template, shareDiff: 1}
+	addr := freeAddr(t)
+	server := New(addr, provider)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		_ = server.Run(ctx)
+	}()
+	waitForTCP(t, addr)
+	server.updateJob(template)
+
+	conn, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	reader := bufio.NewReader(conn)
+
+	writeLine(t, conn, `{"id":1,"method":"mining.subscribe","params":[]}`)
+	var subscribe map[string]any
+	readJSONLine(t, reader, &subscribe)
+
+	writeLine(t, conn, `{"id":2,"method":"mining.suggest_difficulty","params":[1]}`)
+	var suggest map[string]any
+	readJSONLine(t, reader, &suggest)
+	var suggestedDiff map[string]any
+	readJSONLine(t, reader, &suggestedDiff)
+	if suggestedDiff["params"].([]any)[0].(float64) != 1 {
+		t.Fatalf("suggested difficulty not sent: %+v", suggestedDiff)
+	}
+
+	writeLine(t, conn, `{"id":3,"method":"mining.authorize","params":["worker.fixed","x"]}`)
+	var authorize map[string]any
+	readJSONLine(t, reader, &authorize)
+	var authorizedDiff map[string]any
+	readJSONLine(t, reader, &authorizedDiff)
+	var notify map[string]any
+	readJSONLine(t, reader, &notify)
+	params := notify["params"].([]any)
+	jobID := params[0].(string)
+	ntime := params[4].(string)
+	nonce := solveShareNonce(t, template.HeaderHex, template.Bits, ntime, 1)
+
+	writeLine(t, conn, fmt.Sprintf(`{"id":4,"method":"mining.submit","params":["worker.fixed","%s","","%s","%s"]}`, jobID, ntime, nonce))
+	var submit map[string]any
+	readJSONLine(t, reader, &submit)
+	if submit["result"] != true {
+		t.Fatalf("unexpected submit response: %+v", submit)
+	}
+
+	_ = conn.SetReadDeadline(time.Now().Add(200 * time.Millisecond))
+	line, err := reader.ReadBytes('\n')
+	_ = conn.SetReadDeadline(time.Time{})
+	if err == nil {
+		var extra map[string]any
+		if json.Unmarshal(line, &extra) == nil && extra["method"] == "mining.set_difficulty" {
+			t.Fatalf("fixed suggested difficulty was overwritten after share: %+v", extra)
+		}
 	}
 }
 
