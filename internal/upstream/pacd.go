@@ -25,6 +25,10 @@ type MiningInfo struct {
 	NextBits         string `json:"nextbits"`
 	Difficulty       string `json:"difficulty"`
 	TargetSpacingSec int64  `json:"targetspacingsec"`
+	MiningOpen       bool   `json:"miningopen"`
+	MiningStartTime  string `json:"miningstarttime"`
+	MiningStartTS    int64  `json:"miningstarttimestamp"`
+	TimeUntilMining  int64  `json:"timeuntilminingsec"`
 	UTXOs            int    `json:"utxos"`
 	Mempool          int    `json:"mempool"`
 	DataFile         string `json:"datafile"`
@@ -105,7 +109,8 @@ func (c *PACDClient) BlockTemplate(ctx context.Context, address string) (BlockTe
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return result, fmt.Errorf("pacd /getblocktemplate returned %s", resp.Status)
+		body, _ := io.ReadAll(resp.Body)
+		return result, fmt.Errorf("pacd /getblocktemplate returned %s: %s", resp.Status, strings.TrimSpace(string(body)))
 	}
 	err = json.NewDecoder(resp.Body).Decode(&result)
 	return result, err
@@ -157,7 +162,8 @@ func (c *PACDClient) get(ctx context.Context, path string, dest any) error {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("pacd %s returned %s", path, resp.Status)
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("pacd %s returned %s: %s", path, resp.Status, strings.TrimSpace(string(body)))
 	}
 	return json.NewDecoder(resp.Body).Decode(dest)
 }

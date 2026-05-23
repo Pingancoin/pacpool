@@ -11,10 +11,11 @@ import (
 )
 
 type fakePACD struct {
-	mining   upstream.MiningInfo
-	network  upstream.NetworkInfo
-	template upstream.BlockTemplate
-	err      error
+	mining      upstream.MiningInfo
+	network     upstream.NetworkInfo
+	template    upstream.BlockTemplate
+	err         error
+	templateErr error
 }
 
 func (f fakePACD) MiningInfo(context.Context) (upstream.MiningInfo, error) {
@@ -26,6 +27,9 @@ func (f fakePACD) NetworkInfo(context.Context) (upstream.NetworkInfo, error) {
 }
 
 func (f fakePACD) BlockTemplate(context.Context, string) (upstream.BlockTemplate, error) {
+	if f.templateErr != nil {
+		return upstream.BlockTemplate{}, f.templateErr
+	}
 	return f.template, f.err
 }
 
@@ -117,6 +121,46 @@ func TestServiceSnapshotReadyAtGenesisHeight(t *testing.T) {
 	snapshot := svc.Snapshot()
 	if !snapshot.Pool.TemplateBackfill || !snapshot.Pool.ReadyForStratum {
 		t.Fatalf("expected genesis-height chain to be stratum-ready: %+v", snapshot.Pool)
+	}
+}
+
+func TestServiceSnapshotWaitsForMiningOpen(t *testing.T) {
+	svc, err := service.New(
+		fakePACD{
+			mining: upstream.MiningInfo{
+				Network:         "mainnet",
+				Blocks:          0,
+				BestBlockHash:   "genesis",
+				NextHeight:      1,
+				MiningOpen:      false,
+				MiningStartTime: "2026-06-01T00:00:00Z",
+				MiningStartTS:   1780272000,
+				TimeUntilMining: 3600,
+			},
+			network:     upstream.NetworkInfo{Network: "mainnet", BestHeight: 0, BestBlockHash: "genesis"},
+			templateErr: errors.New("template should not be requested before mining opens"),
+		},
+		fakePACData{
+			status: upstream.IndexStatus{Network: "mainnet", IndexedHeight: 0, IndexedHash: "genesis"},
+		},
+		service.Options{
+			Interval:   time.Second,
+			FeeBPS:     500,
+			MiningAddr: "PpoolAddress",
+			ShareDiff:  1,
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	svc.Refresh(context.Background())
+	snapshot := svc.Snapshot()
+	if !snapshot.Healthy || snapshot.Pool.ReadyForStratum || snapshot.Pool.Template.Available || snapshot.Pool.MiningOpen {
+		t.Fatalf("unexpected pre-launch snapshot: %+v", snapshot)
+	}
+	if snapshot.Pool.MiningStartTime == "" || snapshot.Pool.NotReadyReason == "" {
+		t.Fatalf("missing launch wait state: %+v", snapshot.Pool)
 	}
 }
 

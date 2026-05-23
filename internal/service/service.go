@@ -89,6 +89,10 @@ type PoolState struct {
 	ActiveJobs       int             `json:"active_jobs"`
 	ReadyForStratum  bool            `json:"ready_for_stratum"`
 	TemplateBackfill bool            `json:"template_backfill"`
+	MiningOpen       bool            `json:"mining_open"`
+	MiningStartTime  string          `json:"mining_start_time,omitempty"`
+	MiningStartsIn   int64           `json:"mining_starts_in_sec,omitempty"`
+	NotReadyReason   string          `json:"not_ready_reason,omitempty"`
 	MiningAddress    string          `json:"mining_address,omitempty"`
 	LedgerPath       string          `json:"ledger_path,omitempty"`
 	LastLedgerError  string          `json:"last_ledger_error,omitempty"`
@@ -442,9 +446,10 @@ func (s *Service) Refresh(ctx context.Context) {
 	mining, miningErr := s.pacd.MiningInfo(ctx)
 	network, networkErr := s.pacd.NetworkInfo(ctx)
 	index, indexErr := s.pacdata.Status(ctx)
+	miningOpen := miningErr == nil && miningIsOpen(mining)
 	var template upstream.BlockTemplate
 	var templateErr error
-	if s.miningAddr != "" {
+	if s.miningAddr != "" && (miningErr != nil || miningOpen) {
 		template, templateErr = s.pacd.BlockTemplate(ctx, s.miningAddr)
 	}
 
@@ -453,12 +458,21 @@ func (s *Service) Refresh(ctx context.Context) {
 
 	s.state.Errors = make(map[string]string)
 	s.state.UpdatedAt = s.now().UTC()
-	s.state.Healthy = miningErr == nil && networkErr == nil && indexErr == nil && (s.miningAddr == "" || templateErr == nil)
+	s.state.Healthy = miningErr == nil && networkErr == nil && indexErr == nil && (s.miningAddr == "" || !miningOpen || templateErr == nil)
 
 	if miningErr == nil {
 		s.state.PACD = mining
+		s.state.Pool.MiningOpen = miningOpen
+		s.state.Pool.MiningStartTime = mining.MiningStartTime
+		s.state.Pool.MiningStartsIn = mining.TimeUntilMining
+		s.state.Pool.NotReadyReason = ""
+		if !miningOpen {
+			s.state.Pool.NotReadyReason = "mining has not opened yet"
+		}
 	} else {
 		s.state.Errors["pacd_mining"] = miningErr.Error()
+		s.state.Pool.MiningOpen = false
+		s.state.Pool.NotReadyReason = "pacd mining status is unavailable"
 	}
 	if networkErr == nil {
 		s.state.Network = network
@@ -470,7 +484,7 @@ func (s *Service) Refresh(ctx context.Context) {
 	} else {
 		s.state.Errors["pacdata"] = indexErr.Error()
 	}
-	if s.miningAddr != "" {
+	if s.miningAddr != "" && miningOpen {
 		if templateErr == nil {
 			s.lastTemplate = template
 			s.state.Pool.Template = TemplateState{
@@ -488,13 +502,26 @@ func (s *Service) Refresh(ctx context.Context) {
 			s.lastTemplate = upstream.BlockTemplate{}
 			s.state.Pool.Template = TemplateState{}
 		}
+	} else if s.miningAddr != "" && !miningOpen {
+		s.lastTemplate = upstream.BlockTemplate{}
+		s.state.Pool.Template = TemplateState{}
 	}
 
 	s.state.Pool.ConnectedMiners = s.stratumConnected
 	s.state.Pool.ActiveJobs = s.stratumJobs
 	s.state.Pool.TemplateBackfill = s.state.PACData.IndexedHeight == s.state.Network.BestHeight &&
 		s.state.PACData.IndexedHash == s.state.Network.BestBlockHash
-	s.state.Pool.ReadyForStratum = s.miningAddr != "" && s.state.Pool.Template.Available && s.state.Pool.TemplateBackfill
+	s.state.Pool.ReadyForStratum = s.miningAddr != "" && miningOpen && s.state.Pool.Template.Available && s.state.Pool.TemplateBackfill
+	if s.state.Pool.NotReadyReason == "" && !s.state.Pool.ReadyForStratum {
+		switch {
+		case s.miningAddr == "":
+			s.state.Pool.NotReadyReason = "pool mining address is not configured"
+		case !s.state.Pool.TemplateBackfill:
+			s.state.Pool.NotReadyReason = "indexer is not caught up"
+		case !s.state.Pool.Template.Available:
+			s.state.Pool.NotReadyReason = "block template is unavailable"
+		}
+	}
 }
 
 func (s *Service) Snapshot() State {
@@ -1150,6 +1177,10 @@ func payoutAddressFromWorker(worker string) string {
 		return strings.TrimSpace(beforeDot)
 	}
 	return worker
+}
+
+func miningIsOpen(info upstream.MiningInfo) bool {
+	return info.MiningOpen || (info.MiningStartTS == 0 && strings.TrimSpace(info.MiningStartTime) == "")
 }
 
 func (s *Service) setAutoPayoutAttempt(lastErr string) {

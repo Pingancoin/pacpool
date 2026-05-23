@@ -75,6 +75,7 @@ type dashboardView struct {
 	Updated        string
 	HealthLabel    string
 	StratumLabel   string
+	StratumNote    string
 	TemplateLabel  string
 	Height         string
 	Peers          string
@@ -271,7 +272,7 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
           <h2>{{.Copy.Stratum}}</h2>
           <span class="pill {{if .Status.Pool.ReadyForStratum}}ok{{else}}warn{{end}}">{{.StratumLabel}}</span>
           <p class="note">{{.StratumHost}}</p>
-          {{if not .Status.Pool.ReadyForStratum}}<p class="note">{{.Copy.StratumClosedNote}}</p>{{end}}
+          {{if not .Status.Pool.ReadyForStratum}}<p class="note">{{.StratumNote}}</p>{{end}}
         </div>
         <div class="panel">
           <h2>{{.Copy.Template}}</h2>
@@ -373,6 +374,7 @@ func renderDashboard(w http.ResponseWriter, r *http.Request, svc *service.Servic
 		Updated:        timeText(status.UpdatedAt),
 		HealthLabel:    healthyText(copy, status.Healthy),
 		StratumLabel:   readyText(copy, status.Pool.ReadyForStratum),
+		StratumNote:    stratumNote(copy, status.Pool),
 		TemplateLabel:  templateText(copy, status.Pool.Template.Available),
 		Height:         fmt.Sprint(status.Network.BestHeight),
 		Peers:          fmt.Sprint(status.Network.PeerCount),
@@ -663,6 +665,16 @@ func templateText(copy dashboardCopy, ok bool) string {
 		return copy.TemplateReady
 	}
 	return copy.TemplateWaiting
+}
+
+func stratumNote(copy dashboardCopy, pool service.PoolState) string {
+	if !pool.MiningOpen && pool.MiningStartTime != "" {
+		return fmt.Sprintf("%s Mining opens at %s UTC.", copy.StratumClosedNote, pool.MiningStartTime)
+	}
+	if strings.TrimSpace(pool.NotReadyReason) != "" {
+		return fmt.Sprintf("%s %s.", copy.StratumClosedNote, pool.NotReadyReason)
+	}
+	return copy.StratumClosedNote
 }
 
 func timeText(t time.Time) string {

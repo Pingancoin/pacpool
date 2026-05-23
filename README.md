@@ -29,6 +29,11 @@ with BLAKE-256.
 
 At the moment, the pool uses per-worker VarDiff, persists its share ledger on local disk, tracks payout-ready rounds plus found-block attribution, calculates payout previews per solved round, can mark payout batches executed in its ledger, serves a multilingual miner status dashboard with per-address lookup, and can call a local wallet service for scheduled batch payouts. Extranonce fanout remains the next Stratum hardening item.
 
+On launch-locked mainnet, `pacpool` treats `pacd` mining status as healthy but
+keeps `ready_for_stratum=false` until `pacd` reports `miningopen=true`. This
+lets the public dashboard, status API, node RPC, indexer, and explorer stay
+online before launch without giving miners block templates early.
+
 ## Run
 
 ```bash
@@ -101,6 +106,10 @@ Public dashboard pages show the miner connection format:
 `/status` includes pool readiness and live Stratum counters:
 
 - `pool.ready_for_stratum`
+- `pool.mining_open`
+- `pool.mining_start_time`
+- `pool.mining_starts_in_sec`
+- `pool.not_ready_reason`
 - `pool.share_difficulty`
 - `pool.vardiff_enabled`
 - `pool.vardiff_target_sec`
