@@ -235,6 +235,16 @@ func (sess *session) run(ctx context.Context) {
 
 func (sess *session) handle(ctx context.Context, req request) error {
 	switch req.Method {
+	case "mining.configure":
+		return sess.sendResponse(response{
+			ID: req.ID,
+			Result: map[string]bool{
+				"minimum-difficulty":   true,
+				"subscribe-extranonce": false,
+				"version-rolling":      false,
+			},
+			Error: nil,
+		})
 	case "mining.subscribe":
 		sess.subscribed = true
 		return sess.sendResponse(response{
@@ -251,7 +261,10 @@ func (sess *session) handle(ctx context.Context, req request) error {
 			_ = json.Unmarshal(req.Params[0], &sess.worker)
 		}
 		sess.authorized = true
-		sess.difficulty = sess.server.svc.WorkerDifficulty(sess.worker)
+		workerDiff := sess.server.svc.WorkerDifficulty(sess.worker)
+		if workerDiff > sess.difficulty {
+			sess.difficulty = workerDiff
+		}
 		sess.server.mu.Lock()
 		sess.server.publishStatsLocked()
 		sess.server.mu.Unlock()
@@ -265,6 +278,29 @@ func (sess *session) handle(ctx context.Context, req request) error {
 			return sess.sendNotify(job, true)
 		}
 		return nil
+	case "mining.extranonce.subscribe":
+		return sess.sendResponse(response{ID: req.ID, Result: true, Error: nil})
+	case "mining.suggest_difficulty":
+		if len(req.Params) > 0 {
+			var suggested float64
+			if err := json.Unmarshal(req.Params[0], &suggested); err == nil && suggested > 0 {
+				base := sess.server.svc.ShareDifficulty()
+				if suggested < base {
+					suggested = base
+				}
+				sess.difficulty = suggested
+			}
+		}
+		if err := sess.sendResponse(response{ID: req.ID, Result: true, Error: nil}); err != nil {
+			return err
+		}
+		return sess.sendDifficulty(sess.currentDifficulty())
+	case "mining.suggest_target":
+		return sess.sendResponse(response{ID: req.ID, Result: true, Error: nil})
+	case "client.get_version":
+		return sess.sendResponse(response{ID: req.ID, Result: "pacpool/0.1.0", Error: nil})
+	case "mining.get_transactions":
+		return sess.sendResponse(response{ID: req.ID, Result: []string{}, Error: nil})
 	case "mining.submit":
 		return sess.handleSubmit(ctx, req)
 	default:
@@ -333,7 +369,7 @@ func (sess *session) handleSubmit(ctx context.Context, req request) error {
 
 	hash := blake256.Sum256(headerBytes)
 	networkTarget := compactToBig(job.TargetBits)
-	shareTarget := difficultyToTarget(sess.server.svc.ShareDifficulty())
+	shareTarget := difficultyToTarget(sess.currentDifficulty())
 	hashValue := hashToBig(hash[:])
 	if hashValue.Cmp(shareTarget) > 0 {
 		sess.server.svc.RecordShare(worker, false, false, "low difficulty share")
@@ -365,6 +401,13 @@ func (sess *session) sendDifficulty(difficulty float64) error {
 		Method: "mining.set_difficulty",
 		Params: []any{difficulty},
 	})
+}
+
+func (sess *session) currentDifficulty() float64 {
+	if sess.difficulty > 0 {
+		return sess.difficulty
+	}
+	return sess.server.svc.ShareDifficulty()
 }
 
 func (sess *session) sendNotify(job *Job, clean bool) error {

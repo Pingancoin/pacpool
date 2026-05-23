@@ -245,6 +245,139 @@ func TestSubmitAcceptsShareWithoutBlockSolve(t *testing.T) {
 	}
 }
 
+func TestCommonMinerHandshakeMethods(t *testing.T) {
+	template := upstream.BlockTemplate{
+		Height:            18,
+		PreviousBlockHash: strings.Repeat("4", 64),
+		Bits:              "207fffff",
+		Timestamp:         1,
+		CoinbaseTxID:      strings.Repeat("5", 64),
+		HeaderHex:         strings.Repeat("00", headerLength),
+		BlockHex:          strings.Repeat("00", headerLength+1),
+	}
+	provider := &fakeSvc{template: template, shareDiff: 2}
+	addr := freeAddr(t)
+	server := New(addr, provider)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		_ = server.Run(ctx)
+	}()
+	waitForTCP(t, addr)
+	server.updateJob(template)
+
+	conn, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	reader := bufio.NewReader(conn)
+
+	writeLine(t, conn, `{"id":1,"method":"mining.configure","params":[["minimum-difficulty","version-rolling"],{}]}`)
+	var configure map[string]any
+	readJSONLine(t, reader, &configure)
+	if configure["error"] != nil {
+		t.Fatalf("configure failed: %+v", configure)
+	}
+	result := configure["result"].(map[string]any)
+	if result["minimum-difficulty"] != true || result["version-rolling"] != false {
+		t.Fatalf("unexpected configure result: %+v", configure)
+	}
+
+	writeLine(t, conn, `{"id":2,"method":"mining.extranonce.subscribe","params":[]}`)
+	var extranonce map[string]any
+	readJSONLine(t, reader, &extranonce)
+	if extranonce["result"] != true {
+		t.Fatalf("unexpected extranonce response: %+v", extranonce)
+	}
+
+	writeLine(t, conn, `{"id":3,"method":"mining.suggest_difficulty","params":[4]}`)
+	var suggest map[string]any
+	readJSONLine(t, reader, &suggest)
+	if suggest["result"] != true {
+		t.Fatalf("unexpected suggest response: %+v", suggest)
+	}
+	var difficulty map[string]any
+	readJSONLine(t, reader, &difficulty)
+	if difficulty["method"] != "mining.set_difficulty" {
+		t.Fatalf("expected difficulty after suggest: %+v", difficulty)
+	}
+	params := difficulty["params"].([]any)
+	if params[0].(float64) != 4 {
+		t.Fatalf("suggested difficulty not applied: %+v", difficulty)
+	}
+
+	writeLine(t, conn, `{"id":4,"method":"client.get_version","params":[]}`)
+	var version map[string]any
+	readJSONLine(t, reader, &version)
+	if !strings.Contains(version["result"].(string), "pacpool") {
+		t.Fatalf("unexpected version response: %+v", version)
+	}
+
+	writeLine(t, conn, `{"id":5,"method":"mining.get_transactions","params":["job"]}`)
+	var txs map[string]any
+	readJSONLine(t, reader, &txs)
+	if txs["error"] != nil {
+		t.Fatalf("unexpected transactions response: %+v", txs)
+	}
+}
+
+func TestSuggestedDifficultySurvivesAuthorize(t *testing.T) {
+	template := upstream.BlockTemplate{
+		Height:            19,
+		PreviousBlockHash: strings.Repeat("6", 64),
+		Bits:              "207fffff",
+		Timestamp:         1,
+		CoinbaseTxID:      strings.Repeat("7", 64),
+		HeaderHex:         strings.Repeat("00", headerLength),
+		BlockHex:          strings.Repeat("00", headerLength+1),
+	}
+	provider := &fakeSvc{template: template, shareDiff: 1}
+	addr := freeAddr(t)
+	server := New(addr, provider)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		_ = server.Run(ctx)
+	}()
+	waitForTCP(t, addr)
+	server.updateJob(template)
+
+	conn, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	reader := bufio.NewReader(conn)
+
+	writeLine(t, conn, `{"id":1,"method":"mining.subscribe","params":[]}`)
+	var subscribe map[string]any
+	readJSONLine(t, reader, &subscribe)
+
+	writeLine(t, conn, `{"id":2,"method":"mining.suggest_difficulty","params":[4]}`)
+	var suggest map[string]any
+	readJSONLine(t, reader, &suggest)
+	var suggestedDiff map[string]any
+	readJSONLine(t, reader, &suggestedDiff)
+	if suggestedDiff["params"].([]any)[0].(float64) != 4 {
+		t.Fatalf("suggested difficulty not sent: %+v", suggestedDiff)
+	}
+
+	writeLine(t, conn, `{"id":3,"method":"mining.authorize","params":["worker.compat","x"]}`)
+	var authorize map[string]any
+	readJSONLine(t, reader, &authorize)
+	if authorize["result"] != true {
+		t.Fatalf("unexpected authorize response: %+v", authorize)
+	}
+	var authorizedDiff map[string]any
+	readJSONLine(t, reader, &authorizedDiff)
+	if authorizedDiff["params"].([]any)[0].(float64) != 4 {
+		t.Fatalf("authorize overwrote suggested difficulty: %+v", authorizedDiff)
+	}
+}
+
 func freeAddr(t *testing.T) string {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")

@@ -15,6 +15,10 @@ The Stratum side is intentionally minimal for this stage. It supports:
 
 - `mining.subscribe`
 - `mining.authorize`
+- `mining.configure`
+- `mining.extranonce.subscribe`
+- `mining.suggest_difficulty`
+- `mining.suggest_target`
 - `mining.notify`
 - `mining.set_difficulty`
 - `mining.submit`
