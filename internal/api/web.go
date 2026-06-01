@@ -27,6 +27,8 @@ type dashboardCopy struct {
 	Accepted          string
 	Solved            string
 	Fee               string
+	PendingPayout     string
+	PayoutThreshold   string
 	CurrentRound      string
 	Stratum           string
 	Template          string
@@ -103,6 +105,8 @@ type dashboardView struct {
 	Rejected       string
 	Solved         string
 	Fee            string
+	PendingPayout  string
+	PayoutMin      string
 	CurrentRoundID string
 	StratumHost    string
 	ExplorerURL    string
@@ -321,6 +325,8 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
           <div class="metric"><div class="label">{{.Copy.Miners}}</div><div class="value">{{.Miners}}</div></div>
           <div class="metric"><div class="label">{{.Copy.Solved}}</div><div class="value">{{.Solved}}</div></div>
           <div class="metric"><div class="label">{{.Copy.Fee}}</div><div class="value">{{.Fee}}</div></div>
+          <div class="metric"><div class="label">{{.Copy.PendingPayout}}</div><div class="value">{{.PendingPayout}}</div></div>
+          <div class="metric"><div class="label">{{.Copy.PayoutThreshold}}</div><div class="value">{{.PayoutMin}}</div></div>
         </div>
       </div>
     </section>
@@ -616,6 +622,8 @@ func renderDashboard(w http.ResponseWriter, r *http.Request, svc *service.Servic
 		Rejected:       fmt.Sprint(status.Pool.Shares.Rejected),
 		Solved:         fmt.Sprint(status.Pool.Shares.SolvedBlocks),
 		Fee:            fmt.Sprintf("%.2f%%", status.Pool.FeePercent),
+		PendingPayout:  formatPACCompact(totalPendingPayout(status.Pool.PendingPayouts)),
+		PayoutMin:      formatPACCompact(status.Pool.AutoPayout.MinAmount),
 		CurrentRoundID: fmt.Sprintf("#%d", status.Pool.CurrentRound.ID),
 		StratumHost:    "stratum.pingancoin.org:3333",
 		ExplorerURL:    "https://explorer.pingancoin.org",
@@ -698,6 +706,8 @@ func dashboardCopyFor(lang string) dashboardCopy {
 		Accepted:          "Accepted",
 		Solved:            "Solved",
 		Fee:               "Pool fee",
+		PendingPayout:     "Pending payout",
+		PayoutThreshold:   "Payout threshold",
 		CurrentRound:      "Current round",
 		Stratum:           "Stratum",
 		Template:          "Block template",
@@ -773,6 +783,8 @@ func dashboardCopyFor(lang string) dashboardCopy {
 		base.Accepted = "有效份额"
 		base.Solved = "已出块"
 		base.Fee = "矿池费率"
+		base.PendingPayout = "待付款"
+		base.PayoutThreshold = "起付额度"
 		base.CurrentRound = "当前轮次"
 		base.Stratum = "Stratum"
 		base.Template = "区块模板"
@@ -842,6 +854,8 @@ func dashboardCopyFor(lang string) dashboardCopy {
 		base.Accepted = "承認シェア"
 		base.Solved = "発見ブロック"
 		base.Fee = "プール手数料"
+		base.PendingPayout = "未払い"
+		base.PayoutThreshold = "支払い基準"
 		base.CurrentRound = "現在のラウンド"
 		base.Stratum = "Stratum"
 		base.Template = "ブロックテンプレート"
@@ -911,6 +925,8 @@ func dashboardCopyFor(lang string) dashboardCopy {
 		base.Accepted = "승인 공유"
 		base.Solved = "발견 블록"
 		base.Fee = "풀 수수료"
+		base.PendingPayout = "미지급"
+		base.PayoutThreshold = "지급 기준"
 		base.CurrentRound = "현재 라운드"
 		base.Stratum = "Stratum"
 		base.Template = "블록 템플릿"
@@ -1015,6 +1031,32 @@ func formatPAC(atoms int64) string {
 	whole := atoms / 100_000_000
 	frac := atoms % 100_000_000
 	return fmt.Sprintf("%s%d.%08d PAC", sign, whole, frac)
+}
+
+func formatPACCompact(atoms int64) string {
+	sign := ""
+	if atoms < 0 {
+		sign = "-"
+		atoms = -atoms
+	}
+	whole := atoms / 100_000_000
+	frac := atoms % 100_000_000
+	if frac == 0 {
+		return fmt.Sprintf("%s%d PAC", sign, whole)
+	}
+	value := fmt.Sprintf("%s%d.%08d", sign, whole, frac)
+	value = strings.TrimRight(strings.TrimRight(value, "0"), ".")
+	return value + " PAC"
+}
+
+func totalPendingPayout(payouts []service.PayoutEntry) int64 {
+	var total int64
+	for _, payout := range payouts {
+		if payout.Amount > 0 {
+			total += payout.Amount
+		}
+	}
+	return total
 }
 
 func hasOnlineWorkers(workers []service.WorkerState) bool {
