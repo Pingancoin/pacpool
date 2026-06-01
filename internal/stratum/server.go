@@ -3,10 +3,12 @@ package stratum
 import (
 	"bufio"
 	"context"
+	"crypto/rand"
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"log"
 	"math/big"
 	"net"
 	"strconv"
@@ -48,11 +50,22 @@ type Job struct {
 }
 
 const (
-	headerTimestampOffset = 68
-	headerBitsOffset      = 76
-	headerNonceOffset     = 80
-	headerHeightOffset    = 84
-	headerLength          = 88
+	extraNonce1Size   = 4
+	extraNonce2Size   = 8
+	dr5ExtraNonceSize = extraNonce1Size + extraNonce2Size
+	minJobRefresh     = 30 * time.Second
+
+	headerBitsOffset      = 116
+	headerHeightOffset    = 128
+	headerTimestampOffset = 136
+	headerNonceOffset     = 140
+	headerExtraDataOffset = 144
+	headerLength          = 180
+)
+
+var (
+	dcrDiffOneTarget    = compactToBig(0x1d00ffff)
+	legacyDiffOneTarget = compactToBig(0x207fffff)
 )
 
 type request struct {
@@ -69,16 +82,25 @@ type response struct {
 	Params any    `json:"params,omitempty"`
 }
 
+type notification struct {
+	ID     any    `json:"id"`
+	Method string `json:"method"`
+	Params any    `json:"params"`
+}
+
 type session struct {
-	conn       net.Conn
-	server     *Server
-	writerMu   sync.Mutex
-	sessionID  string
-	subscribed bool
-	authorized bool
-	worker     string
-	difficulty float64
-	fixedDiff  bool
+	conn        net.Conn
+	server      *Server
+	writerMu    sync.Mutex
+	sessionID   string
+	extraNonce1 string
+	subscribed  bool
+	authorized  bool
+	worker      string
+	difficulty  float64
+	diffSent    bool
+	fixedDiff   bool
+	legacy      bool
 }
 
 func New(listen string, svc TemplateProvider) *Server {
@@ -114,9 +136,10 @@ func (s *Server) Run(ctx context.Context) error {
 			}
 		}
 		sess := &session{
-			conn:      conn,
-			server:    s,
-			sessionID: fmt.Sprintf("%08x", s.nextID.Add(1)),
+			conn:        conn,
+			server:      s,
+			sessionID:   fmt.Sprintf("%08x", s.nextID.Add(1)),
+			extraNonce1: randomHex(extraNonce1Size),
 		}
 		s.addSession(sess)
 		go sess.run(ctx)
@@ -147,9 +170,13 @@ func (s *Server) updateJob(template upstream.BlockTemplate) {
 		s.publishStatsLocked()
 		return
 	}
+	clean := true
+	if s.job != nil && sameWorkIdentity(s.job.Template, template) {
+		clean = false
+	}
 	bits, _ := strconv.ParseUint(template.Bits, 16, 32)
 	job := &Job{
-		ID:         fmt.Sprintf("%08x", s.nextID.Add(1)),
+		ID:         stratumJobID(template.Height),
 		Template:   template,
 		HeaderHex:  template.HeaderHex,
 		BlockHex:   template.BlockHex,
@@ -165,17 +192,43 @@ func (s *Server) updateJob(template upstream.BlockTemplate) {
 			} else if sess.worker != "" {
 				shareDiff = s.svc.WorkerDifficulty(sess.worker)
 			}
-			_ = sess.sendDifficulty(shareDiff)
-			_ = sess.sendNotify(job, true)
+			if !sess.diffSent || sess.difficulty <= 0 || !nearlyEqual(sess.difficulty, shareDiff) {
+				sess.difficulty = shareDiff
+				_ = sess.sendDifficulty(shareDiff)
+			}
+			_ = sess.sendNotify(job, clean)
 		}
 	}
 }
 
 func sameTemplate(a upstream.BlockTemplate, b upstream.BlockTemplate) bool {
-	return a.Height == b.Height &&
-		a.PreviousBlockHash == b.PreviousBlockHash &&
-		a.CoinbaseTxID == b.CoinbaseTxID &&
-		a.BlockHex == b.BlockHex
+	if !sameWorkIdentity(a, b) {
+		return false
+	}
+	return b.Timestamp-a.Timestamp < int64(minJobRefresh/time.Second)
+}
+
+func sameWorkIdentity(a upstream.BlockTemplate, b upstream.BlockTemplate) bool {
+	if a.Height != b.Height ||
+		a.PreviousBlockHash != b.PreviousBlockHash ||
+		a.CoinbaseTxID != b.CoinbaseTxID ||
+		a.Bits != b.Bits ||
+		!sameStrings(a.TransactionIDs, b.TransactionIDs) {
+		return false
+	}
+	return true
+}
+
+func sameStrings(a []string, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func (s *Server) addSession(sess *session) {
@@ -232,6 +285,9 @@ func (sess *session) run(ctx context.Context) {
 			_ = sess.sendResponse(response{ID: req.ID, Error: []any{20, err.Error(), nil}})
 		}
 	}
+	if err := reader.Err(); err != nil {
+		log.Printf("pacpool stratum read %s: %v", sess.conn.RemoteAddr(), err)
+	}
 }
 
 func (sess *session) handle(ctx context.Context, req request) error {
@@ -247,13 +303,32 @@ func (sess *session) handle(ctx context.Context, req request) error {
 			Error: nil,
 		})
 	case "mining.subscribe":
+		sess.legacy = true
+		var userAgent string
+		if len(req.Params) > 0 {
+			_ = json.Unmarshal(req.Params[0], &userAgent)
+		}
+		if strings.Contains(strings.ToLower(userAgent), "cgminer/4.9.0") {
+			sess.legacy = false
+		}
 		sess.subscribed = true
+		if sess.legacy {
+			return sess.sendResponse(response{
+				ID: req.ID,
+				Result: []any{
+					[][]string{{"mining.notify", sess.sessionID}, {"mining.set_difficulty", sess.sessionID}},
+					sess.sessionID,
+					0,
+				},
+				Error: nil,
+			})
+		}
 		return sess.sendResponse(response{
 			ID: req.ID,
 			Result: []any{
-				[][]string{{"mining.notify", sess.sessionID}, {"mining.set_difficulty", sess.sessionID}},
-				sess.sessionID,
-				0,
+				[][]string{{"mining.set_difficulty", sess.sessionID}, {"mining.notify", sess.sessionID}},
+				strings.Repeat("0", extraNonce2Size*2) + sess.extraNonce1,
+				extraNonce2Size,
 			},
 			Error: nil,
 		})
@@ -274,10 +349,11 @@ func (sess *session) handle(ctx context.Context, req request) error {
 		if err := sess.sendResponse(response{ID: req.ID, Result: true, Error: nil}); err != nil {
 			return err
 		}
+		if err := sess.sendDifficulty(sess.currentDifficulty()); err != nil {
+			return err
+		}
 		if job := sess.server.currentJob(); job != nil && sess.subscribed {
-			if err := sess.sendDifficulty(sess.difficulty); err != nil {
-				return err
-			}
+			time.Sleep(time.Second)
 			return sess.sendNotify(job, true)
 		}
 		return nil
@@ -330,7 +406,6 @@ func (sess *session) handleSubmit(ctx context.Context, req request) error {
 	if worker == "" {
 		worker = sess.worker
 	}
-	_ = extranonce2
 
 	job := sess.server.currentJob()
 	if job == nil || job.ID != jobID {
@@ -351,12 +426,13 @@ func (sess *session) handleSubmit(ctx context.Context, req request) error {
 		sess.server.svc.RecordShare(worker, false, false, "short template")
 		return sess.sendResponse(response{ID: req.ID, Result: false, Error: []any{20, "short template", nil}})
 	}
-	ntime, err := strconv.ParseUint(strings.TrimSpace(ntimeHex), 16, 32)
+	ntimeBytes, err := decodeUint32Hex(ntimeHex, true)
 	if err != nil {
 		sess.server.svc.RecordShare(worker, false, false, "invalid ntime")
 		return sess.sendResponse(response{ID: req.ID, Result: false, Error: []any{22, "invalid ntime", nil}})
 	}
-	nonce, err := strconv.ParseUint(strings.TrimSpace(nonceHex), 16, 32)
+	ntime := binary.LittleEndian.Uint32(ntimeBytes)
+	nonceBytes, err := decodeUint32Hex(nonceHex, true)
 	if err != nil {
 		sess.server.svc.RecordShare(worker, false, false, "invalid nonce")
 		return sess.sendResponse(response{ID: req.ID, Result: false, Error: []any{22, "invalid nonce", nil}})
@@ -365,15 +441,21 @@ func (sess *session) handleSubmit(ctx context.Context, req request) error {
 		sess.server.svc.RecordShare(worker, false, false, "ntime before template")
 		return sess.sendResponse(response{ID: req.ID, Result: false, Error: []any{23, "ntime before template", nil}})
 	}
+	extraData, err := submitExtraData(sess.extraNonce1, extranonce2)
+	if err != nil {
+		sess.server.svc.RecordShare(worker, false, false, err.Error())
+		return sess.sendResponse(response{ID: req.ID, Result: false, Error: []any{22, err.Error(), nil}})
+	}
 
-	binary.LittleEndian.PutUint64(headerBytes[headerTimestampOffset:headerBitsOffset], uint64(ntime))
-	binary.LittleEndian.PutUint32(headerBytes[headerBitsOffset:headerNonceOffset], job.TargetBits)
-	binary.LittleEndian.PutUint32(headerBytes[headerNonceOffset:headerHeightOffset], uint32(nonce))
+	copy(headerBytes[headerTimestampOffset:headerTimestampOffset+4], ntimeBytes)
+	binary.LittleEndian.PutUint32(headerBytes[headerBitsOffset:headerBitsOffset+4], job.TargetBits)
+	copy(headerBytes[headerNonceOffset:headerNonceOffset+4], nonceBytes)
+	copy(headerBytes[headerExtraDataOffset:headerExtraDataOffset+len(extraData)], extraData[:])
 	copy(blockBytes[:headerLength], headerBytes[:headerLength])
 
-	hash := blake256.Sum256(headerBytes)
+	hash := blake256.Sum256(headerBytes[:headerLength])
 	networkTarget := compactToBig(job.TargetBits)
-	shareTarget := difficultyToTarget(sess.currentDifficulty())
+	shareTarget := sess.difficultyTarget()
 	hashValue := hashToBig(hash[:])
 	if hashValue.Cmp(shareTarget) > 0 {
 		sess.server.svc.RecordShare(worker, false, false, "low difficulty share")
@@ -401,9 +483,22 @@ func (sess *session) handleSubmit(ctx context.Context, req request) error {
 }
 
 func (sess *session) sendDifficulty(difficulty float64) error {
-	return sess.sendResponse(response{
-		Method: "mining.set_difficulty",
-		Params: []any{difficulty},
+	if difficulty <= 0 {
+		difficulty = sess.server.svc.ShareDifficulty()
+	}
+	if err := sess.sendNotification("mining.set_difficulty", []any{difficulty}); err != nil {
+		return err
+	}
+	sess.difficulty = difficulty
+	sess.diffSent = true
+	return nil
+}
+
+func (sess *session) sendNotification(method string, params any) error {
+	return sess.sendJSON(notification{
+		ID:     nil,
+		Method: method,
+		Params: params,
 	})
 }
 
@@ -414,26 +509,66 @@ func (sess *session) currentDifficulty() float64 {
 	return sess.server.svc.ShareDifficulty()
 }
 
+func (sess *session) difficultyTarget() *big.Int {
+	base := dcrDiffOneTarget
+	if sess.legacy {
+		base = legacyDiffOneTarget
+	}
+	return difficultyToTarget(sess.currentDifficulty(), base)
+}
+
 func (sess *session) sendNotify(job *Job, clean bool) error {
-	ntime := fmt.Sprintf("%08x", uint32(job.Template.Timestamp))
-	return sess.sendResponse(response{
-		Method: "mining.notify",
-		Params: []any{
+	headerBytes, err := hex.DecodeString(job.HeaderHex)
+	if err != nil {
+		return err
+	}
+	if len(headerBytes) < headerLength {
+		return fmt.Errorf("short template header")
+	}
+	if sess.legacy {
+		return sess.sendNotification("mining.notify", []any{
 			job.ID,
 			job.Template.PreviousBlockHash,
 			job.Template.CoinbaseTxID,
 			job.Template.Bits,
-			ntime,
+			fmt.Sprintf("%08x", uint32(job.Template.Timestamp)),
 			clean,
 			job.HeaderHex,
-		},
+		})
+	}
+	prevBlock, err := reversePrevBlockWords(hex.EncodeToString(headerBytes[4:36]))
+	if err != nil {
+		return err
+	}
+	bits, err := reverseHexBytes(hex.EncodeToString(headerBytes[headerBitsOffset : headerBitsOffset+4]))
+	if err != nil {
+		return err
+	}
+	ntime, err := reverseHexBytes(hex.EncodeToString(headerBytes[headerTimestampOffset : headerTimestampOffset+4]))
+	if err != nil {
+		return err
+	}
+	return sess.sendNotification("mining.notify", []any{
+		job.ID,
+		prevBlock,
+		hex.EncodeToString(headerBytes[36:144]),
+		hex.EncodeToString(headerBytes[176:180]),
+		[]string{},
+		hex.EncodeToString(headerBytes[0:4]),
+		bits,
+		ntime,
+		clean,
 	})
 }
 
 func (sess *session) sendResponse(resp response) error {
+	return sess.sendJSON(resp)
+}
+
+func (sess *session) sendJSON(v any) error {
 	sess.writerMu.Lock()
 	defer sess.writerMu.Unlock()
-	encoded, err := json.Marshal(resp)
+	encoded, err := json.Marshal(v)
 	if err != nil {
 		return err
 	}
@@ -480,11 +615,104 @@ func hashToBig(hash []byte) *big.Int {
 	return new(big.Int).SetBytes(hash)
 }
 
-func difficultyToTarget(difficulty float64) *big.Int {
+func submitExtraData(extraNonce1 string, submitted string) ([32]byte, error) {
+	var extraData [32]byte
+	submitted = strings.TrimSpace(submitted)
+	if submitted == "" {
+		return extraData, nil
+	}
+	submittedBytes, err := hex.DecodeString(submitted)
+	if err != nil {
+		return extraData, fmt.Errorf("invalid extranonce")
+	}
+	if len(submittedBytes) == extraNonce2Size && extraNonce1 != "" {
+		suffix, err := hex.DecodeString(extraNonce1)
+		if err != nil {
+			return extraData, fmt.Errorf("invalid session extranonce")
+		}
+		submittedBytes = append(submittedBytes, suffix...)
+	} else if len(submittedBytes) <= extraNonce1Size && extraNonce1 != "" {
+		prefix, err := hex.DecodeString(extraNonce1)
+		if err != nil {
+			return extraData, fmt.Errorf("invalid session extranonce")
+		}
+		submittedBytes = append(prefix, submittedBytes...)
+	}
+	if len(submittedBytes) == 0 || len(submittedBytes) > len(extraData) {
+		return extraData, fmt.Errorf("invalid extranonce length")
+	}
+	copy(extraData[:], submittedBytes)
+	return extraData, nil
+}
+
+func decodeUint32Hex(value string, reverse bool) ([]byte, error) {
+	decoded, err := hex.DecodeString(strings.TrimSpace(value))
+	if err != nil {
+		return nil, err
+	}
+	if len(decoded) != 4 {
+		return nil, fmt.Errorf("uint32 hex length is %d, want 4", len(decoded))
+	}
+	if reverse {
+		for i, j := 0, len(decoded)-1; i < j; i, j = i+1, j-1 {
+			decoded[i], decoded[j] = decoded[j], decoded[i]
+		}
+	}
+	return decoded, nil
+}
+
+func reverseHexBytes(value string) (string, error) {
+	decoded, err := hex.DecodeString(value)
+	if err != nil {
+		return "", err
+	}
+	for i, j := 0, len(decoded)-1; i < j; i, j = i+1, j-1 {
+		decoded[i], decoded[j] = decoded[j], decoded[i]
+	}
+	return hex.EncodeToString(decoded), nil
+}
+
+func reversePrevBlockWords(value string) (string, error) {
+	if len(value)%8 != 0 {
+		return "", fmt.Errorf("prevhash length must be a multiple of 4 bytes")
+	}
+	var b strings.Builder
+	b.Grow(len(value))
+	for i := 0; i < len(value); i += 8 {
+		word, err := reverseHexBytes(value[i : i+8])
+		if err != nil {
+			return "", err
+		}
+		b.WriteString(word)
+	}
+	return b.String(), nil
+}
+
+func randomHex(size int) string {
+	if size <= 0 {
+		return ""
+	}
+	buf := make([]byte, size)
+	if _, err := rand.Read(buf); err != nil {
+		for i := range buf {
+			buf[i] = byte(time.Now().UnixNano() >> (uint(i%8) * 8))
+		}
+	}
+	return hex.EncodeToString(buf)
+}
+
+func stratumJobID(height uint32) string {
+	var id [12]byte
+	binary.BigEndian.PutUint32(id[:4], height)
+	binary.BigEndian.PutUint64(id[4:], uint64(time.Now().UnixNano()))
+	return hex.EncodeToString(id[:])
+}
+
+func difficultyToTarget(difficulty float64, baseTarget *big.Int) *big.Int {
 	if difficulty <= 0 {
 		difficulty = 1
 	}
-	base := compactToBig(0x207fffff)
+	base := new(big.Int).Set(baseTarget)
 	scaled := new(big.Rat).SetInt(base)
 	scaled.Quo(scaled, new(big.Rat).SetFloat64(difficulty))
 	target := new(big.Int)

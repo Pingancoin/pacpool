@@ -698,16 +698,26 @@ func (s *Service) SetStratumStats(connected int, jobs int, workerNames []string)
 	s.stratumConnected = connected
 	s.stratumJobs = jobs
 	s.onlineWorkers = make(map[string]int)
+	for _, ws := range s.workers {
+		ws.Online = false
+		ws.OnlineMachines = 0
+	}
 	for _, worker := range workerNames {
 		worker = strings.TrimSpace(worker)
 		if worker == "" {
 			continue
 		}
 		s.onlineWorkers[worker]++
-		if ws, ok := s.workers[worker]; ok {
-			ws.Online = true
-			ws.OnlineMachines = s.onlineWorkers[worker]
+		ws, ok := s.workers[worker]
+		if !ok {
+			ws = &WorkerState{
+				Name:       worker,
+				Difficulty: s.shareDiff,
+			}
+			s.workers[worker] = ws
 		}
+		ws.Online = true
+		ws.OnlineMachines = s.onlineWorkers[worker]
 	}
 	s.state.Pool.ConnectedMiners = connected
 	s.state.Pool.ActiveJobs = jobs

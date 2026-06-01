@@ -218,6 +218,16 @@ func TestSetStratumStatsPersistsAcrossRefresh(t *testing.T) {
 	if snapshot.Pool.ConnectedMiners != 3 || snapshot.Pool.ActiveJobs != 1 {
 		t.Fatalf("unexpected stratum stats after refresh: %+v", snapshot.Pool)
 	}
+	svc.SetStratumStats(0, 1, nil)
+	snapshot = svc.Snapshot()
+	if snapshot.Pool.ConnectedMiners != 0 {
+		t.Fatalf("expected no connected miners after disconnect: %+v", snapshot.Pool)
+	}
+	for _, worker := range snapshot.Pool.Workers {
+		if worker.Online || worker.OnlineMachines != 0 {
+			t.Fatalf("worker stayed online after disconnect: %+v", worker)
+		}
+	}
 }
 
 func TestRecordShareUpdatesPoolAndWorkers(t *testing.T) {

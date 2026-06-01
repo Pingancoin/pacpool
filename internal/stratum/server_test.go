@@ -82,10 +82,10 @@ func (f *fakeSvc) RecordSolvedBlock(worker string, height uint32, hash string) {
 }
 
 func TestSubscribeAuthorizeAndSubmit(t *testing.T) {
+	withEasyDiffOneTarget(t)
+
 	header := make([]byte, headerLength)
-	binary.LittleEndian.PutUint64(header[headerTimestampOffset:headerBitsOffset], 1)
-	binary.LittleEndian.PutUint32(header[headerBitsOffset:headerNonceOffset], 0x207fffff)
-	binary.LittleEndian.PutUint32(header[headerHeightOffset:headerLength], 16)
+	putHeaderFields(header, 0x207fffff, 1, 16)
 	block := append(append([]byte(nil), header...), 0x00)
 	template := upstream.BlockTemplate{
 		Height:            16,
@@ -115,11 +115,18 @@ func TestSubscribeAuthorizeAndSubmit(t *testing.T) {
 	defer conn.Close()
 	reader := bufio.NewReader(conn)
 
-	writeLine(t, conn, `{"id":1,"method":"mining.subscribe","params":[]}`)
+	writeLine(t, conn, `{"id":1,"method":"mining.subscribe","params":["cgminer/4.9.0","00000001"]}`)
 	var subscribe map[string]any
 	readJSONLine(t, reader, &subscribe)
 	if subscribe["error"] != nil {
 		t.Fatalf("unexpected subscribe response: %+v", subscribe)
+	}
+	subscribeResult := subscribe["result"].([]any)
+	if got := len(subscribeResult[1].(string)); got != dr5ExtraNonceSize*2 {
+		t.Fatalf("subscribe extranonce1 hex length = %d, want %d", got, dr5ExtraNonceSize*2)
+	}
+	if got := int(subscribeResult[2].(float64)); got != extraNonce2Size {
+		t.Fatalf("subscribe extranonce2 size = %d, want %d", got, extraNonce2Size)
 	}
 
 	writeLine(t, conn, `{"id":2,"method":"mining.authorize","params":["worker","x"]}`)
@@ -140,9 +147,35 @@ func TestSubscribeAuthorizeAndSubmit(t *testing.T) {
 	}
 	params := notify["params"].([]any)
 	jobID := params[0].(string)
-	ntime := params[4].(string)
-	if got := params[6].(string); got != template.HeaderHex {
-		t.Fatalf("notify headerhex = %q, want %q", got, template.HeaderHex)
+	ntime := params[7].(string)
+	if got := len(params); got != 9 {
+		t.Fatalf("notify param count = %d, want 9", got)
+	}
+	wantPrev, err := reversePrevBlockWords(hex.EncodeToString(header[4:36]))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := params[1].(string); got != wantPrev {
+		t.Fatalf("notify prevblock = %q, want %q", got, wantPrev)
+	}
+	if got, want := params[2].(string), hex.EncodeToString(header[36:144]); got != want {
+		t.Fatalf("notify partial header = %q, want %q", got, want)
+	}
+	if got, want := params[3].(string), hex.EncodeToString(header[176:180]); got != want {
+		t.Fatalf("notify suffix = %q, want %q", got, want)
+	}
+	if branches, ok := params[4].([]any); !ok || len(branches) != 0 {
+		t.Fatalf("notify branches = %#v, want empty array", params[4])
+	}
+	if got, want := params[5].(string), hex.EncodeToString(header[0:4]); got != want {
+		t.Fatalf("notify version = %q, want %q", got, want)
+	}
+	wantBits, err := reverseHexBytes(hex.EncodeToString(header[headerBitsOffset : headerBitsOffset+4]))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := params[6].(string); got != wantBits {
+		t.Fatalf("notify bits = %q, want %q", got, wantBits)
 	}
 	nonce := solveNonce(t, template.HeaderHex, template.Bits, ntime)
 
@@ -174,16 +207,16 @@ func TestSubscribeAuthorizeAndSubmit(t *testing.T) {
 		t.Fatal(err)
 	}
 	headerBytes := blockBytes[:headerLength]
-	if got := binary.LittleEndian.Uint32(headerBytes[headerHeightOffset:headerLength]); got != 16 {
+	if got := binary.LittleEndian.Uint32(headerBytes[headerHeightOffset : headerHeightOffset+4]); got != 16 {
 		t.Fatalf("submitted block height = %d, want 16", got)
 	}
 }
 
 func TestSubmitAcceptsShareWithoutBlockSolve(t *testing.T) {
+	withEasyDiffOneTarget(t)
+
 	header := make([]byte, headerLength)
-	binary.LittleEndian.PutUint64(header[headerTimestampOffset:headerBitsOffset], 1)
-	binary.LittleEndian.PutUint32(header[headerBitsOffset:headerNonceOffset], 0x206bc47f)
-	binary.LittleEndian.PutUint32(header[headerHeightOffset:headerLength], 17)
+	putHeaderFields(header, 0x206bc47f, 1, 17)
 	block := append(append([]byte(nil), header...), 0x00)
 	template := upstream.BlockTemplate{
 		Height:            17,
@@ -213,7 +246,7 @@ func TestSubmitAcceptsShareWithoutBlockSolve(t *testing.T) {
 	defer conn.Close()
 	reader := bufio.NewReader(conn)
 
-	writeLine(t, conn, `{"id":1,"method":"mining.subscribe","params":[]}`)
+	writeLine(t, conn, `{"id":1,"method":"mining.subscribe","params":["cgminer/4.9.0","00000001"]}`)
 	var subscribe map[string]any
 	readJSONLine(t, reader, &subscribe)
 	writeLine(t, conn, `{"id":2,"method":"mining.authorize","params":["worker.share","x"]}`)
@@ -226,9 +259,9 @@ func TestSubmitAcceptsShareWithoutBlockSolve(t *testing.T) {
 
 	params := notify["params"].([]any)
 	jobID := params[0].(string)
-	ntime := params[4].(string)
-	if got := params[6].(string); got != template.HeaderHex {
-		t.Fatalf("notify headerhex = %q, want %q", got, template.HeaderHex)
+	ntime := params[7].(string)
+	if got, want := params[2].(string), hex.EncodeToString(header[36:144]); got != want {
+		t.Fatalf("notify partial header = %q, want %q", got, want)
 	}
 	nonce := solveShareNonce(t, template.HeaderHex, template.Bits, ntime, provider.shareDiff)
 
@@ -329,6 +362,64 @@ func TestCommonMinerHandshakeMethods(t *testing.T) {
 	}
 }
 
+func TestLegacyPacminerNotifyUsesHeaderHexExtension(t *testing.T) {
+	header := make([]byte, headerLength)
+	putHeaderFields(header, 0x207fffff, 42, 21)
+	template := upstream.BlockTemplate{
+		Height:            21,
+		PreviousBlockHash: strings.Repeat("a", 64),
+		Bits:              "207fffff",
+		Timestamp:         42,
+		CoinbaseTxID:      strings.Repeat("b", 64),
+		HeaderHex:         hex.EncodeToString(header),
+		BlockHex:          hex.EncodeToString(append(append([]byte(nil), header...), 0x00)),
+	}
+	provider := &fakeSvc{template: template, shareDiff: 1024}
+	addr := freeAddr(t)
+	server := New(addr, provider)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		_ = server.Run(ctx)
+	}()
+	waitForTCP(t, addr)
+	server.updateJob(template)
+
+	conn, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	reader := bufio.NewReader(conn)
+
+	writeLine(t, conn, `{"id":1,"method":"mining.subscribe","params":["pacminer/0.3.0"]}`)
+	var subscribe map[string]any
+	readJSONLine(t, reader, &subscribe)
+	result := subscribe["result"].([]any)
+	if got := int(result[2].(float64)); got != 0 {
+		t.Fatalf("legacy extranonce2 size = %d, want 0", got)
+	}
+
+	writeLine(t, conn, `{"id":2,"method":"mining.authorize","params":["worker.gpu","x"]}`)
+	var authorize map[string]any
+	readJSONLine(t, reader, &authorize)
+	var difficulty map[string]any
+	readJSONLine(t, reader, &difficulty)
+	var notify map[string]any
+	readJSONLine(t, reader, &notify)
+	if notify["method"] != "mining.notify" {
+		t.Fatalf("unexpected notify message: %+v", notify)
+	}
+	params := notify["params"].([]any)
+	if got := len(params); got != 7 {
+		t.Fatalf("legacy notify param count = %d, want 7", got)
+	}
+	if got := params[6].(string); got != template.HeaderHex {
+		t.Fatalf("legacy headerhex = %q, want %q", got, template.HeaderHex)
+	}
+}
+
 func TestSuggestedDifficultySurvivesAuthorize(t *testing.T) {
 	template := upstream.BlockTemplate{
 		Height:            19,
@@ -358,7 +449,7 @@ func TestSuggestedDifficultySurvivesAuthorize(t *testing.T) {
 	defer conn.Close()
 	reader := bufio.NewReader(conn)
 
-	writeLine(t, conn, `{"id":1,"method":"mining.subscribe","params":[]}`)
+	writeLine(t, conn, `{"id":1,"method":"mining.subscribe","params":["cgminer/4.9.0","00000001"]}`)
 	var subscribe map[string]any
 	readJSONLine(t, reader, &subscribe)
 
@@ -385,10 +476,10 @@ func TestSuggestedDifficultySurvivesAuthorize(t *testing.T) {
 }
 
 func TestSuggestedDifficultySurvivesAcceptedShare(t *testing.T) {
+	withEasyDiffOneTarget(t)
+
 	header := make([]byte, headerLength)
-	binary.LittleEndian.PutUint64(header[headerTimestampOffset:headerBitsOffset], 1)
-	binary.LittleEndian.PutUint32(header[headerBitsOffset:headerNonceOffset], 0x206bc47f)
-	binary.LittleEndian.PutUint32(header[headerHeightOffset:headerLength], 20)
+	putHeaderFields(header, 0x206bc47f, 1, 20)
 	block := append(append([]byte(nil), header...), 0x00)
 	template := upstream.BlockTemplate{
 		Height:            20,
@@ -418,7 +509,7 @@ func TestSuggestedDifficultySurvivesAcceptedShare(t *testing.T) {
 	defer conn.Close()
 	reader := bufio.NewReader(conn)
 
-	writeLine(t, conn, `{"id":1,"method":"mining.subscribe","params":[]}`)
+	writeLine(t, conn, `{"id":1,"method":"mining.subscribe","params":["cgminer/4.9.0","00000001"]}`)
 	var subscribe map[string]any
 	readJSONLine(t, reader, &subscribe)
 
@@ -440,7 +531,7 @@ func TestSuggestedDifficultySurvivesAcceptedShare(t *testing.T) {
 	readJSONLine(t, reader, &notify)
 	params := notify["params"].([]any)
 	jobID := params[0].(string)
-	ntime := params[4].(string)
+	ntime := params[7].(string)
 	nonce := solveShareNonce(t, template.HeaderHex, template.Bits, ntime, 1)
 
 	writeLine(t, conn, fmt.Sprintf(`{"id":4,"method":"mining.submit","params":["worker.fixed","%s","","%s","%s"]}`, jobID, ntime, nonce))
@@ -504,28 +595,54 @@ func readJSONLine(t *testing.T, reader *bufio.Reader, dest any) {
 	}
 }
 
+func putHeaderFields(header []byte, bits uint32, timestamp uint32, height uint32) {
+	binary.LittleEndian.PutUint32(header[headerTimestampOffset:headerTimestampOffset+4], timestamp)
+	binary.LittleEndian.PutUint32(header[headerBitsOffset:headerBitsOffset+4], bits)
+	binary.LittleEndian.PutUint32(header[headerHeightOffset:headerHeightOffset+4], height)
+}
+
+func withEasyDiffOneTarget(t *testing.T) {
+	t.Helper()
+	original := dcrDiffOneTarget
+	dcrDiffOneTarget = compactToBig(0x207fffff)
+	t.Cleanup(func() {
+		dcrDiffOneTarget = original
+	})
+}
+
 func solveNonce(t *testing.T, headerHex string, bitsHex string, ntime string) string {
 	t.Helper()
 	header, err := hex.DecodeString(headerHex)
 	if err != nil {
 		t.Fatal(err)
 	}
-	ntimeVal, err := strconv.ParseUint(ntime, 16, 32)
+	ntimeLE, err := reverseHexBytes(ntime)
 	if err != nil {
 		t.Fatal(err)
+	}
+	ntimeBytes, err := hex.DecodeString(ntimeLE)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ntimeBytes) != 4 {
+		t.Fatalf("ntime length = %d, want 4", len(ntimeBytes))
 	}
 	bitsVal, err := strconv.ParseUint(bitsHex, 16, 32)
 	if err != nil {
 		t.Fatal(err)
 	}
-	binary.LittleEndian.PutUint64(header[headerTimestampOffset:headerBitsOffset], uint64(ntimeVal))
-	binary.LittleEndian.PutUint32(header[headerBitsOffset:headerNonceOffset], uint32(bitsVal))
+	copy(header[headerTimestampOffset:headerTimestampOffset+4], ntimeBytes)
+	binary.LittleEndian.PutUint32(header[headerBitsOffset:headerBitsOffset+4], uint32(bitsVal))
 	target := compactToBig(uint32(bitsVal))
 	for nonce := uint32(0); ; nonce++ {
-		binary.LittleEndian.PutUint32(header[headerNonceOffset:headerHeightOffset], nonce)
+		binary.LittleEndian.PutUint32(header[headerNonceOffset:headerNonceOffset+4], nonce)
 		hash := blake256.Sum256(header)
 		if hashToBig(hash[:]).Cmp(target) <= 0 {
-			return fmt.Sprintf("%08x", nonce)
+			nonceBE, err := reverseHexBytes(hex.EncodeToString(header[headerNonceOffset : headerNonceOffset+4]))
+			if err != nil {
+				t.Fatal(err)
+			}
+			return nonceBE
 		}
 	}
 }
@@ -536,24 +653,35 @@ func solveShareNonce(t *testing.T, headerHex string, bitsHex string, ntime strin
 	if err != nil {
 		t.Fatal(err)
 	}
-	ntimeVal, err := strconv.ParseUint(ntime, 16, 32)
+	ntimeLE, err := reverseHexBytes(ntime)
 	if err != nil {
 		t.Fatal(err)
+	}
+	ntimeBytes, err := hex.DecodeString(ntimeLE)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ntimeBytes) != 4 {
+		t.Fatalf("ntime length = %d, want 4", len(ntimeBytes))
 	}
 	bitsVal, err := strconv.ParseUint(bitsHex, 16, 32)
 	if err != nil {
 		t.Fatal(err)
 	}
-	binary.LittleEndian.PutUint64(header[headerTimestampOffset:headerBitsOffset], uint64(ntimeVal))
-	binary.LittleEndian.PutUint32(header[headerBitsOffset:headerNonceOffset], uint32(bitsVal))
-	shareTarget := difficultyToTarget(shareDiff)
+	copy(header[headerTimestampOffset:headerTimestampOffset+4], ntimeBytes)
+	binary.LittleEndian.PutUint32(header[headerBitsOffset:headerBitsOffset+4], uint32(bitsVal))
+	shareTarget := difficultyToTarget(shareDiff, dcrDiffOneTarget)
 	networkTarget := compactToBig(uint32(bitsVal))
 	for nonce := uint32(0); ; nonce++ {
-		binary.LittleEndian.PutUint32(header[headerNonceOffset:headerHeightOffset], nonce)
+		binary.LittleEndian.PutUint32(header[headerNonceOffset:headerNonceOffset+4], nonce)
 		hash := blake256.Sum256(header)
 		value := hashToBig(hash[:])
 		if value.Cmp(shareTarget) <= 0 && value.Cmp(networkTarget) > 0 {
-			return fmt.Sprintf("%08x", nonce)
+			nonceBE, err := reverseHexBytes(hex.EncodeToString(header[headerNonceOffset : headerNonceOffset+4]))
+			if err != nil {
+				t.Fatal(err)
+			}
+			return nonceBE
 		}
 	}
 }
