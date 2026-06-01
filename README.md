@@ -49,9 +49,9 @@ go run ./cmd/pacpool \
   --autopayout=false \
   --payoutwallet http://127.0.0.1:9810 \
   --payoutminatoms 500000000 \
-  --payoutevery 10m \
-  --payoutwindowstart 08:00 \
-  --payoutwindowend 09:00 \
+  --payoutevery 1h \
+  --payoutwindowstart 00:00 \
+  --payoutwindowend 00:00 \
   --payouttimezone Asia/Shanghai \
   --payoutbatchlimit 50 \
   --listen 127.0.0.1:9809 \
@@ -76,11 +76,16 @@ local-only service on the same host and set:
 - `PACPOOL_WALLET_TOKEN` if the wallet service is token-protected
 - `PACPOOL_WALLET_PASSPHRASE` only if the hot wallet is encrypted and the host is trusted
 - `PACPOOL_PAYOUT_MIN_ATOMS=500000000` for a 5 PAC per-address threshold
-- `PACPOOL_PAYOUT_INTERVAL=10m` to retry batches during the payout window
-- `PACPOOL_PAYOUT_WINDOW_START=08:00`
-- `PACPOOL_PAYOUT_WINDOW_END=09:00`
+- `PACPOOL_PAYOUT_INTERVAL=1h` to check payout batches once per hour
+- `PACPOOL_PAYOUT_WINDOW_START=00:00`
+- `PACPOOL_PAYOUT_WINDOW_END=00:00`
 - `PACPOOL_PAYOUT_TIMEZONE=Asia/Shanghai`
 - `PACPOOL_PAYOUT_BATCH_LIMIT=50`
+
+When `PACPOOL_PAYOUT_WINDOW_START` and `PACPOOL_PAYOUT_WINDOW_END` are equal,
+the payout window is treated as all day. With the defaults above, automatic
+payouts run hourly, pay only addresses at or above the configured threshold,
+and process at most one configured batch per run.
 
 Miner usernames are treated as payout addresses. A worker suffix is allowed:
 `P...` and `P....rig01` both pay the `P...` address.

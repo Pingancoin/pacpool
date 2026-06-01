@@ -279,10 +279,10 @@ func New(pacd PACDSource, pacdata PACDataSource, opts Options) (*Service, error)
 		opts.PayoutMin = 5 * coin
 	}
 	if strings.TrimSpace(opts.PayoutWindowStart) == "" {
-		opts.PayoutWindowStart = "08:00"
+		opts.PayoutWindowStart = "00:00"
 	}
 	if strings.TrimSpace(opts.PayoutWindowEnd) == "" {
-		opts.PayoutWindowEnd = "09:00"
+		opts.PayoutWindowEnd = "00:00"
 	}
 	if strings.TrimSpace(opts.PayoutTimezone) == "" {
 		opts.PayoutTimezone = "Asia/Shanghai"
@@ -1157,6 +1157,9 @@ func (s *Service) inPayoutWindow(t time.Time) bool {
 	}
 	end, ok := parseClock(s.payoutWindowEnd)
 	if !ok {
+		return true
+	}
+	if start == end {
 		return true
 	}
 	local := t.In(s.payoutLocation)

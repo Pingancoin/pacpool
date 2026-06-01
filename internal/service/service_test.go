@@ -463,6 +463,42 @@ func TestTryAutoPayoutSendsAndMarksPaid(t *testing.T) {
 	}
 }
 
+func TestEqualPayoutWindowMeansAllDay(t *testing.T) {
+	current := time.Date(2026, 6, 1, 13, 30, 0, 0, time.UTC)
+	pacd := fakePACD{template: upstream.BlockTemplate{Height: 201}}
+	pacd.template.NextSubsidy.Miner = 100
+	sender := &fakePayoutSender{txid: "all-day-tx"}
+	svc, err := service.New(pacd, fakePACData{}, service.Options{
+		Interval:          time.Second,
+		FeeBPS:            500,
+		MiningAddr:        "SminingAddr",
+		ShareDiff:         1,
+		AutoPayout:        true,
+		PayoutMin:         50,
+		PayoutWindowStart: "00:00",
+		PayoutWindowEnd:   "00:00",
+		PayoutSender:      sender,
+		Now: func() time.Time {
+			return current
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc.Refresh(context.Background())
+	svc.RecordShare("Pminer.worker1", true, true, "")
+	current = current.Add(time.Second)
+	svc.RecordSolvedBlock("Pminer.worker1", 201, "block201")
+
+	record, ok, err := svc.TryAutoPayout(context.Background())
+	if err != nil || !ok {
+		t.Fatalf("auto payout should run during all-day window: record=%+v ok=%v err=%v", record, ok, err)
+	}
+	if record.TxID != "all-day-tx" {
+		t.Fatalf("unexpected txid: %+v", record)
+	}
+}
+
 func TestPendingPayoutsAggregateByPayoutAddress(t *testing.T) {
 	base := time.Date(2026, 5, 18, 1, 0, 0, 0, time.UTC)
 	current := base
