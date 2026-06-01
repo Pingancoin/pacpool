@@ -128,6 +128,7 @@ type TemplateState struct {
 	Height            uint32 `json:"height"`
 	PreviousBlockHash string `json:"previousblockhash,omitempty"`
 	Bits              string `json:"bits,omitempty"`
+	Difficulty        string `json:"difficulty,omitempty"`
 	MempoolSize       int    `json:"mempoolsize"`
 	TotalFees         int64  `json:"totalfees"`
 	TransactionCount  int    `json:"transaction_count"`
@@ -492,6 +493,7 @@ func (s *Service) Refresh(ctx context.Context) {
 				Height:            template.Height,
 				PreviousBlockHash: template.PreviousBlockHash,
 				Bits:              template.Bits,
+				Difficulty:        template.Difficulty,
 				MempoolSize:       template.MempoolSize,
 				TotalFees:         template.TotalFees,
 				TransactionCount:  len(template.TransactionIDs),

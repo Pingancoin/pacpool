@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"html/template"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -20,6 +21,8 @@ type dashboardCopy struct {
 	Waiting           string
 	Height            string
 	Peers             string
+	NetworkDifficulty string
+	NetworkHashrate   string
 	Miners            string
 	Accepted          string
 	Solved            string
@@ -44,6 +47,12 @@ type dashboardCopy struct {
 	Explorer          string
 	PoolStatus        string
 	Payouts           string
+	PaymentRecords    string
+	NoPayments        string
+	PaymentTime       string
+	PaymentAmount     string
+	PaymentTxID       string
+	PaymentRecipients string
 	MiningGuide       string
 	MiningURL         string
 	MiningUsername    string
@@ -79,6 +88,8 @@ type dashboardView struct {
 	TemplateLabel  string
 	Height         string
 	Peers          string
+	NetworkDiff    string
+	NetworkHash    string
 	Miners         string
 	Accepted       string
 	Rejected       string
@@ -103,7 +114,7 @@ type dashboardView struct {
 	MinerLastPay   string
 }
 
-var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.FuncMap{"timeText": timeText, "formatPAC": formatPAC}).Parse(`<!doctype html>
+var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.FuncMap{"timeText": timeText, "formatPAC": formatPAC, "shortText": shortText}).Parse(`<!doctype html>
 <html lang="{{.Copy.Lang}}">
 <head>
   <meta charset="utf-8">
@@ -259,6 +270,8 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
         <div class="metrics">
           <div class="metric"><div class="label">{{.Copy.StatusHealthy}}</div><div class="value">{{.HealthLabel}}</div></div>
           <div class="metric"><div class="label">{{.Copy.Height}}</div><div class="value">{{.Height}}</div></div>
+          <div class="metric"><div class="label">{{.Copy.NetworkDifficulty}}</div><div class="value">{{.NetworkDiff}}</div></div>
+          <div class="metric"><div class="label">{{.Copy.NetworkHashrate}}</div><div class="value">{{.NetworkHash}}</div></div>
           <div class="metric"><div class="label">{{.Copy.Peers}}</div><div class="value">{{.Peers}}</div></div>
           <div class="metric"><div class="label">{{.Copy.Miners}}</div><div class="value">{{.Miners}}</div></div>
           <div class="metric"><div class="label">{{.Copy.Accepted}}</div><div class="value">{{.Accepted}}</div></div>
@@ -313,6 +326,20 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
         <div class="empty">{{.Copy.NoMinerData}}</div>
         {{end}}
       {{end}}
+    </section>
+
+    <section class="panel" style="margin-bottom:16px">
+      <h2>{{.Copy.PaymentRecords}}</h2>
+      {{if .Status.Pool.Payments}}
+      <table>
+        <thead><tr><th>{{.Copy.PaymentTime}}</th><th>{{.Copy.PaymentAmount}}</th><th>{{.Copy.PaymentRecipients}}</th><th>{{.Copy.PaymentTxID}}</th></tr></thead>
+        <tbody>
+        {{range .Status.Pool.Payments}}
+          <tr><td>{{timeText .CreatedAt}}</td><td>{{formatPAC .Total}}</td><td>{{len .Payouts}}</td><td class="mono">{{shortText .TxID 18}}</td></tr>
+        {{end}}
+        </tbody>
+      </table>
+      {{else}}<div class="empty">{{.Copy.NoPayments}}</div>{{end}}
     </section>
 
     <section class="grid">
@@ -378,6 +405,8 @@ func renderDashboard(w http.ResponseWriter, r *http.Request, svc *service.Servic
 		TemplateLabel:  templateText(copy, status.Pool.Template.Available),
 		Height:         fmt.Sprint(status.Network.BestHeight),
 		Peers:          fmt.Sprint(status.Network.PeerCount),
+		NetworkDiff:    formatDifficulty(status.PACD.Difficulty, status.Pool.Template.Difficulty),
+		NetworkHash:    formatNetworkHashrate(status.PACD.Difficulty, status.Pool.Template.Difficulty, status.Network.TargetSpacingSec, status.PACD.TargetSpacingSec),
 		Miners:         fmt.Sprint(status.Pool.ConnectedMiners),
 		Accepted:       fmt.Sprint(status.Pool.Shares.Accepted),
 		Rejected:       fmt.Sprint(status.Pool.Shares.Rejected),
@@ -434,6 +463,8 @@ func dashboardCopyFor(lang string) dashboardCopy {
 		Waiting:           "Waiting",
 		Height:            "Height",
 		Peers:             "Peers",
+		NetworkDifficulty: "Network difficulty",
+		NetworkHashrate:   "Network hashrate",
 		Miners:            "Miners",
 		Accepted:          "Accepted",
 		Solved:            "Solved",
@@ -458,6 +489,12 @@ func dashboardCopyFor(lang string) dashboardCopy {
 		Explorer:          "Explorer",
 		PoolStatus:        "Pool status",
 		Payouts:           "Payouts",
+		PaymentRecords:    "Payment records",
+		NoPayments:        "No payments have been executed yet.",
+		PaymentTime:       "Time",
+		PaymentAmount:     "Amount",
+		PaymentTxID:       "TxID",
+		PaymentRecipients: "Recipients",
 		MiningGuide:       "How to connect miners",
 		MiningURL:         "Stratum URL",
 		MiningUsername:    "Username",
@@ -493,6 +530,8 @@ func dashboardCopyFor(lang string) dashboardCopy {
 		base.Waiting = "等待中"
 		base.Height = "区块高度"
 		base.Peers = "节点连接"
+		base.NetworkDifficulty = "全网难度"
+		base.NetworkHashrate = "全网算力"
 		base.Miners = "矿工数"
 		base.Accepted = "有效份额"
 		base.Solved = "已出块"
@@ -517,6 +556,12 @@ func dashboardCopyFor(lang string) dashboardCopy {
 		base.Explorer = "区块浏览器"
 		base.PoolStatus = "矿池状态"
 		base.Payouts = "结算信息"
+		base.PaymentRecords = "付款记录"
+		base.NoPayments = "暂无付款记录。"
+		base.PaymentTime = "时间"
+		base.PaymentAmount = "金额"
+		base.PaymentTxID = "交易 ID"
+		base.PaymentRecipients = "收款地址数"
 		base.MiningGuide = "矿工接入方式"
 		base.MiningURL = "接入地址"
 		base.MiningUsername = "用户名"
@@ -546,6 +591,8 @@ func dashboardCopyFor(lang string) dashboardCopy {
 		base.Waiting = "待機中"
 		base.Height = "ブロック高"
 		base.Peers = "ピア"
+		base.NetworkDifficulty = "ネットワーク難易度"
+		base.NetworkHashrate = "ネットワークハッシュレート"
 		base.Miners = "マイナー"
 		base.Accepted = "承認シェア"
 		base.Solved = "発見ブロック"
@@ -570,6 +617,12 @@ func dashboardCopyFor(lang string) dashboardCopy {
 		base.Explorer = "エクスプローラー"
 		base.PoolStatus = "プール状態"
 		base.Payouts = "支払い"
+		base.PaymentRecords = "支払い記録"
+		base.NoPayments = "支払い記録はまだありません。"
+		base.PaymentTime = "時刻"
+		base.PaymentAmount = "金額"
+		base.PaymentTxID = "TxID"
+		base.PaymentRecipients = "受取数"
 		base.MiningGuide = "マイナー接続方法"
 		base.MiningURL = "Stratum URL"
 		base.MiningUsername = "ユーザー名"
@@ -599,6 +652,8 @@ func dashboardCopyFor(lang string) dashboardCopy {
 		base.Waiting = "대기 중"
 		base.Height = "블록 높이"
 		base.Peers = "피어"
+		base.NetworkDifficulty = "네트워크 난이도"
+		base.NetworkHashrate = "네트워크 해시레이트"
 		base.Miners = "채굴자"
 		base.Accepted = "승인 공유"
 		base.Solved = "발견 블록"
@@ -623,6 +678,12 @@ func dashboardCopyFor(lang string) dashboardCopy {
 		base.Explorer = "탐색기"
 		base.PoolStatus = "풀 상태"
 		base.Payouts = "지급"
+		base.PaymentRecords = "지급 기록"
+		base.NoPayments = "아직 지급 기록이 없습니다."
+		base.PaymentTime = "시간"
+		base.PaymentAmount = "금액"
+		base.PaymentTxID = "TxID"
+		base.PaymentRecipients = "수신자 수"
 		base.MiningGuide = "채굴기 접속 방법"
 		base.MiningURL = "Stratum URL"
 		base.MiningUsername = "사용자 이름"
@@ -693,4 +754,82 @@ func formatPAC(atoms int64) string {
 	whole := atoms / 100_000_000
 	frac := atoms % 100_000_000
 	return fmt.Sprintf("%s%d.%08d PAC", sign, whole, frac)
+}
+
+func formatDifficulty(values ...string) string {
+	difficulty := firstFloat(values...)
+	if difficulty <= 0 {
+		return "-"
+	}
+	if difficulty >= 1_000_000 {
+		return fmt.Sprintf("%.2fM", difficulty/1_000_000)
+	}
+	if difficulty >= 1_000 {
+		return fmt.Sprintf("%.2fK", difficulty/1_000)
+	}
+	if difficulty >= 10 {
+		return fmt.Sprintf("%.2f", difficulty)
+	}
+	return fmt.Sprintf("%.4f", difficulty)
+}
+
+func formatNetworkHashrate(difficulty string, fallbackDifficulty string, spacingCandidates ...int64) string {
+	diff := firstFloat(difficulty, fallbackDifficulty)
+	if diff <= 0 {
+		return "-"
+	}
+	spacing := int64(150)
+	for _, candidate := range spacingCandidates {
+		if candidate > 0 {
+			spacing = candidate
+			break
+		}
+	}
+	hashrate := diff * 4_294_967_296 / float64(spacing)
+	switch {
+	case hashrate >= 1e18:
+		return fmt.Sprintf("%.2f EH/s", hashrate/1e18)
+	case hashrate >= 1e15:
+		return fmt.Sprintf("%.2f PH/s", hashrate/1e15)
+	case hashrate >= 1e12:
+		return fmt.Sprintf("%.2f TH/s", hashrate/1e12)
+	case hashrate >= 1e9:
+		return fmt.Sprintf("%.2f GH/s", hashrate/1e9)
+	case hashrate >= 1e6:
+		return fmt.Sprintf("%.2f MH/s", hashrate/1e6)
+	case hashrate >= 1e3:
+		return fmt.Sprintf("%.2f KH/s", hashrate/1e3)
+	default:
+		return fmt.Sprintf("%.2f H/s", hashrate)
+	}
+}
+
+func firstFloat(values ...string) float64 {
+	for _, value := range values {
+		value = strings.TrimSpace(strings.ReplaceAll(value, ",", ""))
+		if value == "" {
+			continue
+		}
+		parsed, err := strconv.ParseFloat(value, 64)
+		if err == nil && parsed > 0 {
+			return parsed
+		}
+	}
+	return 0
+}
+
+func shortText(value string, limit int) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "-"
+	}
+	if limit <= 0 || len(value) <= limit {
+		return value
+	}
+	if limit <= 3 {
+		return value[:limit]
+	}
+	head := (limit - 3) / 2
+	tail := limit - 3 - head
+	return value[:head] + "..." + value[len(value)-tail:]
 }
