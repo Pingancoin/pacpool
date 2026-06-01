@@ -216,8 +216,19 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
     .stack { display: grid; gap: 16px; }
     .guide { display: grid; grid-template-columns: repeat(3, minmax(160px, 1fr)); gap: 12px; }
     .guide-item { background: var(--panel-soft); border: 1px solid var(--line); border-radius: 8px; padding: 13px; min-width: 0; }
+    .guide-panel { padding: 14px 16px; }
+    .guide-panel h2 { margin-bottom: 10px; }
+    .guide-panel .guide { gap: 9px; }
+    .guide-panel .guide-item { padding: 10px 11px; }
+    .guide-panel .label { margin-bottom: 4px; }
+    .guide-panel .note { margin-top: 8px; }
     .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; word-break: break-all; }
     .miner-search { display: grid; grid-template-columns: minmax(220px, 1fr) auto; gap: 10px; margin-bottom: 14px; }
+    .lookup-panel { margin-bottom: 16px; padding: 14px 16px; }
+    .lookup-bar { display: grid; grid-template-columns: auto minmax(260px, 1fr); gap: 14px; align-items: center; }
+    .lookup-bar h2 { margin: 0; white-space: nowrap; }
+    .lookup-bar .miner-search { margin: 0; }
+    .lookup-result { margin-top: 14px; }
     input, button {
       min-height: 38px;
       border: 1px solid var(--line);
@@ -247,6 +258,8 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
       .header-tools { justify-items: start; }
       .langs { justify-content: flex-start; }
       .metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .lookup-bar { grid-template-columns: 1fr; gap: 10px; }
+      .lookup-bar h2 { white-space: normal; }
     }
     @media (max-width: 520px) {
       .page { width: min(100% - 22px, 1180px); padding-top: 18px; }
@@ -288,9 +301,36 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
       </div>
     </section>
 
+    <section class="panel lookup-panel">
+      <div class="lookup-bar">
+        <h2>{{.Copy.MinerLookup}}</h2>
+        <form method="get" class="miner-search">
+          <input type="hidden" name="lang" value="{{.Copy.Lang}}">
+          <input name="miner" value="{{.MinerQuery}}" placeholder="{{.Copy.MinerAddress}}" autocomplete="off">
+          <button type="submit">{{.Copy.Lookup}}</button>
+        </form>
+      </div>
+      {{if .MinerSearched}}
+        <div class="lookup-result">
+        {{if .MinerFound}}
+          <div class="metrics miner-metrics">
+            <div class="metric"><div class="label">{{.Copy.OnlineMachines}}</div><div class="value">{{.MinerStats.OnlineMachines}}</div></div>
+            <div class="metric"><div class="label">{{.Copy.TotalEarned}}</div><div class="value">{{.MinerTotal}}</div></div>
+            <div class="metric"><div class="label">{{.Copy.TotalPaid}}</div><div class="value">{{.MinerPaid}}</div></div>
+            <div class="metric"><div class="label">{{.Copy.TodayEarned}}</div><div class="value">{{.MinerToday}}</div></div>
+            <div class="metric"><div class="label">{{.Copy.Unpaid}}</div><div class="value">{{.MinerUnpaid}}</div></div>
+          </div>
+          <p class="note">{{.Copy.LastPayment}} {{.MinerLastPay}}</p>
+        {{else}}
+          <div class="empty">{{.Copy.NoMinerData}}</div>
+        {{end}}
+        </div>
+      {{end}}
+    </section>
+
     <section class="grid">
       <div class="stack">
-        <section class="panel">
+        <section class="panel guide-panel">
           <h2>{{.Copy.MiningGuide}}</h2>
           <div class="guide">
             <div class="guide-item"><div class="label">{{.Copy.MiningURL}}</div><div class="mono">{{.MiningURL}}</div></div>
@@ -298,29 +338,6 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
             <div class="guide-item"><div class="label">{{.Copy.MiningPassword}}</div><div>{{.Copy.MiningPasswordAny}}</div></div>
           </div>
           <p class="note">{{.Copy.MiningExample}}</p>
-        </section>
-
-        <section class="panel">
-          <h2>{{.Copy.MinerLookup}}</h2>
-          <form method="get" class="miner-search">
-            <input type="hidden" name="lang" value="{{.Copy.Lang}}">
-            <input name="miner" value="{{.MinerQuery}}" placeholder="{{.Copy.MinerAddress}}" autocomplete="off">
-            <button type="submit">{{.Copy.Lookup}}</button>
-          </form>
-          {{if .MinerSearched}}
-            {{if .MinerFound}}
-            <div class="metrics miner-metrics">
-              <div class="metric"><div class="label">{{.Copy.OnlineMachines}}</div><div class="value">{{.MinerStats.OnlineMachines}}</div></div>
-              <div class="metric"><div class="label">{{.Copy.TotalEarned}}</div><div class="value">{{.MinerTotal}}</div></div>
-              <div class="metric"><div class="label">{{.Copy.TotalPaid}}</div><div class="value">{{.MinerPaid}}</div></div>
-              <div class="metric"><div class="label">{{.Copy.TodayEarned}}</div><div class="value">{{.MinerToday}}</div></div>
-              <div class="metric"><div class="label">{{.Copy.Unpaid}}</div><div class="value">{{.MinerUnpaid}}</div></div>
-            </div>
-            <p class="note">{{.Copy.LastPayment}} {{.MinerLastPay}}</p>
-            {{else}}
-            <div class="empty">{{.Copy.NoMinerData}}</div>
-            {{end}}
-          {{end}}
         </section>
 
         <section class="panel">
