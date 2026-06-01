@@ -59,6 +59,7 @@ type dashboardCopy struct {
 	MiningPassword    string
 	MiningExample     string
 	MiningPasswordAny string
+	ViewWorkers       string
 	MinerLookup       string
 	MinerAddress      string
 	Lookup            string
@@ -105,6 +106,7 @@ type dashboardView struct {
 	PayoutsURL     string
 	MiningURL      string
 	UsernameSample string
+	WorkersURL     string
 	MinerQuery     string
 	MinerSearched  bool
 	MinerFound     bool
@@ -212,16 +214,16 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
     .links { display: grid; gap: 9px; }
     .linkrow { display: flex; justify-content: space-between; gap: 12px; border-bottom: 1px solid var(--line); padding-bottom: 8px; }
     .linkrow:last-child { border-bottom: 0; padding-bottom: 0; }
-    .grid { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(320px, .9fr); gap: 16px; }
+    .grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(320px, 1fr); gap: 16px; }
     .stack { display: grid; gap: 16px; }
-    .guide { display: grid; grid-template-columns: repeat(3, minmax(160px, 1fr)); gap: 12px; }
-    .guide-item { background: var(--panel-soft); border: 1px solid var(--line); border-radius: 8px; padding: 13px; min-width: 0; }
-    .guide-panel { padding: 14px 16px; }
-    .guide-panel h2 { margin-bottom: 10px; }
-    .guide-panel .guide { gap: 9px; }
-    .guide-panel .guide-item { padding: 10px 11px; }
+    .guide { display: grid; grid-template-columns: 1fr; gap: 7px; }
+    .guide-item { display: grid; grid-template-columns: 104px minmax(0, 1fr); gap: 10px; align-items: baseline; background: var(--panel-soft); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; min-width: 0; }
+    .guide-panel { padding: 12px 14px; }
+    .guide-panel h2 { margin-bottom: 8px; }
     .guide-panel .label { margin-bottom: 4px; }
-    .guide-panel .note { margin-top: 8px; }
+    .guide-panel .note { margin-top: 7px; }
+    .guide-actions { display: flex; justify-content: flex-end; margin-top: 10px; }
+    .button-link { min-height: 34px; display: inline-flex; align-items: center; border: 1px solid var(--accent); border-radius: 6px; padding: 5px 12px; background: var(--accent); color: #fff; font-weight: 650; }
     .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; word-break: break-all; }
     .miner-search { display: grid; grid-template-columns: minmax(220px, 1fr) auto; gap: 10px; margin-bottom: 14px; }
     .lookup-panel { margin-bottom: 16px; padding: 14px 16px; }
@@ -253,7 +255,7 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
     .empty { color: var(--muted); padding: 18px 0 4px; }
     footer { margin-top: 18px; color: var(--muted); font-size: 13px; }
     @media (max-width: 860px) {
-      header, .grid, .guide { grid-template-columns: 1fr; display: grid; }
+      header, .grid { grid-template-columns: 1fr; display: grid; }
       header { gap: 12px; }
       .header-tools { justify-items: start; }
       .langs { justify-content: flex-start; }
@@ -263,7 +265,7 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
     }
     @media (max-width: 520px) {
       .page { width: min(100% - 22px, 1180px); padding-top: 18px; }
-      .metrics, .miner-metrics, .miner-search { grid-template-columns: 1fr; }
+      .metrics, .miner-metrics, .miner-search, .guide-item { grid-template-columns: 1fr; }
       .panel { padding: 14px; }
       th, td { padding: 8px 5px; font-size: 13px; }
     }
@@ -290,7 +292,6 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
     <section class="hero">
       <div class="panel">
         <div class="metrics">
-          <div class="metric"><div class="label">{{.Copy.StatusHealthy}}</div><div class="value">{{.HealthLabel}}</div></div>
           <div class="metric"><div class="label">{{.Copy.Height}}</div><div class="value">{{.Height}}</div></div>
           <div class="metric"><div class="label">{{.Copy.NetworkDifficulty}}</div><div class="value">{{.NetworkDiff}}</div></div>
           <div class="metric"><div class="label">{{.Copy.NetworkHashrate}}</div><div class="value">{{.NetworkHash}}</div></div>
@@ -338,22 +339,7 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
             <div class="guide-item"><div class="label">{{.Copy.MiningPassword}}</div><div>{{.Copy.MiningPasswordAny}}</div></div>
           </div>
           <p class="note">{{.Copy.MiningExample}}</p>
-        </section>
-
-        <section class="panel">
-          <h2>{{.Copy.Workers}}</h2>
-          {{if hasOnlineWorkers .Status.Pool.Workers}}
-          <table>
-            <thead><tr><th>{{.Copy.Worker}}</th><th>{{.Copy.Difficulty}}</th><th>{{.Copy.Accepted}}</th><th>{{.Copy.Rejected}}</th><th>{{.Copy.LastShare}}</th></tr></thead>
-            <tbody>
-            {{range .Status.Pool.Workers}}
-              {{if .Online}}
-              <tr><td>{{.Name}}</td><td>{{printf "%.2f" .Difficulty}}</td><td>{{.Accepted}}</td><td>{{.Rejected}}</td><td>{{timeText .LastShareAt}}</td></tr>
-              {{end}}
-            {{end}}
-            </tbody>
-          </table>
-          {{else}}<div class="empty">{{.Copy.NoWorkers}}</div>{{end}}
+          <div class="guide-actions"><a class="button-link" href="{{.WorkersURL}}">{{.Copy.ViewWorkers}}</a></div>
         </section>
       </div>
 
@@ -420,6 +406,85 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
 </body>
 </html>`))
 
+var workersTemplate = template.Must(template.New("workers").Funcs(template.FuncMap{"timeText": timeText, "hasOnlineWorkers": hasOnlineWorkers}).Parse(`<!doctype html>
+<html lang="{{.Copy.Lang}}">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{.Copy.Workers}} | {{.Copy.Title}}</title>
+  <style>
+    :root { color-scheme: light; --bg:#f6f7f4; --panel:#fff; --text:#1a201a; --muted:#5f6b60; --line:#d9dfd6; --accent:#15553e; --shadow:0 12px 30px rgba(20,34,26,.08); }
+    body[data-theme="dark"] { color-scheme: dark; --bg:#101411; --panel:#171d18; --text:#edf3ed; --muted:#a9b6aa; --line:#2b362e; --accent:#9df0bd; --shadow:none; }
+    * { box-sizing: border-box; }
+    body { margin:0; background:var(--bg); color:var(--text); font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
+    a { color:var(--accent); text-decoration:none; }
+    a:hover { text-decoration:underline; }
+    .page { width:min(1180px, calc(100% - 32px)); margin:0 auto; padding:28px 0 44px; }
+    header { display:flex; justify-content:space-between; gap:18px; align-items:flex-start; margin-bottom:18px; }
+    h1 { margin:0 0 6px; font-size:clamp(28px, 5vw, 42px); line-height:1.08; }
+    .subtitle, .empty { color:var(--muted); }
+    .panel { background:var(--panel); border:1px solid var(--line); border-radius:8px; box-shadow:var(--shadow); padding:18px; }
+    .toolbar { display:flex; gap:8px; flex-wrap:wrap; justify-content:flex-end; }
+    .toolbar a, .toolbar button { min-height:32px; border:1px solid var(--line); border-radius:999px; padding:4px 11px; background:var(--panel); color:var(--text); font:inherit; cursor:pointer; }
+    table { width:100%; border-collapse:collapse; }
+    th, td { padding:10px 8px; border-bottom:1px solid var(--line); text-align:left; vertical-align:top; }
+    th { color:var(--muted); font-size:13px; font-weight:600; }
+    .mono { font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; word-break:break-all; }
+    @media (max-width:720px) { header { display:grid; } .toolbar { justify-content:flex-start; } th, td { padding:8px 5px; font-size:13px; } }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <header>
+      <div>
+        <h1>{{.Copy.Workers}}</h1>
+        <div class="subtitle">{{.Copy.Subtitle}}</div>
+      </div>
+      <nav class="toolbar">
+        <a href="/?lang={{.Copy.Lang}}">{{.Copy.Title}}</a>
+        <a href="/workers?lang=en">{{.Copy.LangEnglish}}</a>
+        <a href="/workers?lang=zh-CN">{{.Copy.LangChinese}}</a>
+        <a href="/workers?lang=ja">{{.Copy.LangJapanese}}</a>
+        <a href="/workers?lang=ko">{{.Copy.LangKorean}}</a>
+        <button class="theme-toggle" type="button" data-day-label="{{.Copy.DayMode}}" data-night-label="{{.Copy.NightMode}}">{{.Copy.NightMode}}</button>
+      </nav>
+    </header>
+    <section class="panel">
+      {{if hasOnlineWorkers .Status.Pool.Workers}}
+      <table>
+        <thead><tr><th>{{.Copy.Worker}}</th><th>{{.Copy.Difficulty}}</th><th>{{.Copy.Accepted}}</th><th>{{.Copy.Rejected}}</th><th>{{.Copy.LastShare}}</th></tr></thead>
+        <tbody>
+        {{range .Status.Pool.Workers}}
+          {{if .Online}}
+          <tr><td class="mono">{{.Name}}</td><td>{{printf "%.2f" .Difficulty}}</td><td>{{.Accepted}}</td><td>{{.Rejected}}</td><td>{{timeText .LastShareAt}}</td></tr>
+          {{end}}
+        {{end}}
+        </tbody>
+      </table>
+      {{else}}<div class="empty">{{.Copy.NoWorkers}}</div>{{end}}
+    </section>
+  </main>
+  <script>
+    (function () {
+      var key = "pacpool-theme";
+      var button = document.querySelector(".theme-toggle");
+      function apply(theme) {
+        if (theme !== "dark") theme = "light";
+        document.body.setAttribute("data-theme", theme);
+        try { localStorage.setItem(key, theme); } catch (error) {}
+        if (button) button.textContent = theme === "dark" ? button.getAttribute("data-day-label") : button.getAttribute("data-night-label");
+      }
+      var saved = "light";
+      try { saved = localStorage.getItem(key) || saved; } catch (error) {}
+      if (button) button.addEventListener("click", function () {
+        apply(document.body.getAttribute("data-theme") === "dark" ? "light" : "dark");
+      });
+      apply(saved);
+    })();
+  </script>
+</body>
+</html>`))
+
 func renderDashboard(w http.ResponseWriter, r *http.Request, svc *service.Service) error {
 	lang := dashboardLang(r)
 	copy := dashboardCopyFor(lang)
@@ -454,6 +519,7 @@ func renderDashboard(w http.ResponseWriter, r *http.Request, svc *service.Servic
 		PayoutsURL:     "/payouts",
 		MiningURL:      "stratum+tcp://stratum.pingancoin.org:3333",
 		UsernameSample: "PYourWalletAddress.rig01",
+		WorkersURL:     "/workers?lang=" + copy.Lang,
 		MinerQuery:     minerQuery,
 		MinerSearched:  minerQuery != "",
 		MinerFound:     minerFound,
@@ -466,6 +532,17 @@ func renderDashboard(w http.ResponseWriter, r *http.Request, svc *service.Servic
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	return dashboardTemplate.Execute(w, view)
+}
+
+func renderWorkers(w http.ResponseWriter, r *http.Request, svc *service.Service) error {
+	lang := dashboardLang(r)
+	copy := dashboardCopyFor(lang)
+	view := dashboardView{
+		Copy:   copy,
+		Status: svc.Snapshot(),
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	return workersTemplate.Execute(w, view)
 }
 
 func dashboardLang(r *http.Request) string {
@@ -535,6 +612,7 @@ func dashboardCopyFor(lang string) dashboardCopy {
 		MiningPassword:    "Password",
 		MiningExample:     "Use your own PAC wallet address as the username. Add a dot and rig name to distinguish machines.",
 		MiningPasswordAny: "Any value is accepted.",
+		ViewWorkers:       "View workers",
 		MinerLookup:       "Miner lookup",
 		MinerAddress:      "Enter payout address",
 		Lookup:            "Lookup",
@@ -604,6 +682,7 @@ func dashboardCopyFor(lang string) dashboardCopy {
 		base.MiningPassword = "密码"
 		base.MiningExample = "用户名填写自己的 PAC 钱包地址；多台矿机可在地址后加点号和矿工名区分。"
 		base.MiningPasswordAny = "任意填写即可。"
+		base.ViewWorkers = "查看矿工"
 		base.MinerLookup = "矿工查询"
 		base.MinerAddress = "输入收款钱包地址"
 		base.Lookup = "查询"
@@ -667,6 +746,7 @@ func dashboardCopyFor(lang string) dashboardCopy {
 		base.MiningPassword = "パスワード"
 		base.MiningExample = "ユーザー名には自分の PAC ウォレットアドレスを使い、ドットとリグ名で機器を区別できます。"
 		base.MiningPasswordAny = "任意の値で構いません。"
+		base.ViewWorkers = "ワーカーを見る"
 		base.MinerLookup = "マイナー検索"
 		base.MinerAddress = "支払い先アドレスを入力"
 		base.Lookup = "検索"
@@ -730,6 +810,7 @@ func dashboardCopyFor(lang string) dashboardCopy {
 		base.MiningPassword = "비밀번호"
 		base.MiningExample = "사용자 이름은 본인의 PAC 지갑 주소를 사용하고, 점과 장비 이름을 붙여 구분할 수 있습니다."
 		base.MiningPasswordAny = "아무 값이나 사용할 수 있습니다."
+		base.ViewWorkers = "워커 보기"
 		base.MinerLookup = "채굴자 조회"
 		base.MinerAddress = "지급 주소 입력"
 		base.Lookup = "조회"
