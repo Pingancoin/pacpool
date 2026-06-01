@@ -76,6 +76,9 @@ type dashboardCopy struct {
 	StratumClosedNote string
 	TemplateReady     string
 	TemplateWaiting   string
+	ThemeLabel        string
+	DayMode           string
+	NightMode         string
 }
 
 type dashboardView struct {
@@ -114,7 +117,7 @@ type dashboardView struct {
 	MinerLastPay   string
 }
 
-var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.FuncMap{"timeText": timeText, "formatPAC": formatPAC, "shortText": shortText}).Parse(`<!doctype html>
+var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.FuncMap{"timeText": timeText, "formatPAC": formatPAC, "shortText": shortText, "hasOnlineWorkers": hasOnlineWorkers}).Parse(`<!doctype html>
 <html lang="{{.Copy.Lang}}">
 <head>
   <meta charset="utf-8">
@@ -122,7 +125,7 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
   <title>{{.Copy.Title}}</title>
   <style>
     :root {
-      color-scheme: light dark;
+      color-scheme: light;
       --bg: #f6f7f4;
       --panel: #ffffff;
       --panel-soft: #eef3ee;
@@ -134,19 +137,18 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
       --warn: #a05a13;
       --shadow: 0 12px 30px rgba(20, 34, 26, .08);
     }
-    @media (prefers-color-scheme: dark) {
-      :root {
-        --bg: #101411;
-        --panel: #171d18;
-        --panel-soft: #1d271f;
-        --text: #edf3ed;
-        --muted: #a9b6aa;
-        --line: #2b362e;
-        --accent: #6bd49e;
-        --accent-strong: #9df0bd;
-        --warn: #f0b35a;
-        --shadow: none;
-      }
+    body[data-theme="dark"] {
+      color-scheme: dark;
+      --bg: #101411;
+      --panel: #171d18;
+      --panel-soft: #1d271f;
+      --text: #edf3ed;
+      --muted: #a9b6aa;
+      --line: #2b362e;
+      --accent: #6bd49e;
+      --accent-strong: #9df0bd;
+      --warn: #f0b35a;
+      --shadow: none;
     }
     * { box-sizing: border-box; }
     body {
@@ -161,7 +163,21 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
     header { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; margin-bottom: 22px; }
     h1 { margin: 0 0 6px; font-size: clamp(28px, 5vw, 46px); line-height: 1.05; letter-spacing: 0; }
     .subtitle { margin: 0; color: var(--muted); max-width: 720px; font-size: 16px; }
+    .header-tools { display: grid; justify-items: end; gap: 10px; }
     .langs { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+    .theme-toggle { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 13px; }
+    .theme-toggle button {
+      min-height: 32px;
+      border-color: var(--line);
+      background: var(--panel);
+      color: var(--text);
+      padding: 4px 11px;
+    }
+    .theme-toggle button.active {
+      border-color: var(--accent);
+      background: var(--accent);
+      color: #fff;
+    }
     .langs a, .pill {
       min-height: 32px;
       display: inline-flex;
@@ -239,6 +255,7 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
     @media (max-width: 860px) {
       header, .hero, .grid, .guide { grid-template-columns: 1fr; display: grid; }
       header { gap: 12px; }
+      .header-tools { justify-items: start; }
       .langs { justify-content: flex-start; }
       .metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     }
@@ -257,12 +274,19 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
         <h1>{{.Copy.Title}}</h1>
         <p class="subtitle">{{.Copy.Subtitle}}</p>
       </div>
-      <nav class="langs" aria-label="Language">
-        <a href="/?lang=en">{{.Copy.LangEnglish}}</a>
-        <a href="/?lang=zh-CN">{{.Copy.LangChinese}}</a>
-        <a href="/?lang=ja">{{.Copy.LangJapanese}}</a>
-        <a href="/?lang=ko">{{.Copy.LangKorean}}</a>
-      </nav>
+      <div class="header-tools">
+        <nav class="langs" aria-label="Language">
+          <a href="/?lang=en">{{.Copy.LangEnglish}}</a>
+          <a href="/?lang=zh-CN">{{.Copy.LangChinese}}</a>
+          <a href="/?lang=ja">{{.Copy.LangJapanese}}</a>
+          <a href="/?lang=ko">{{.Copy.LangKorean}}</a>
+        </nav>
+        <div class="theme-toggle" aria-label="{{.Copy.ThemeLabel}}">
+          <span>{{.Copy.ThemeLabel}}</span>
+          <button type="button" data-theme-choice="light">{{.Copy.DayMode}}</button>
+          <button type="button" data-theme-choice="dark">{{.Copy.NightMode}}</button>
+        </div>
+      </div>
     </header>
 
     <section class="hero">
@@ -272,9 +296,7 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
           <div class="metric"><div class="label">{{.Copy.Height}}</div><div class="value">{{.Height}}</div></div>
           <div class="metric"><div class="label">{{.Copy.NetworkDifficulty}}</div><div class="value">{{.NetworkDiff}}</div></div>
           <div class="metric"><div class="label">{{.Copy.NetworkHashrate}}</div><div class="value">{{.NetworkHash}}</div></div>
-          <div class="metric"><div class="label">{{.Copy.Peers}}</div><div class="value">{{.Peers}}</div></div>
           <div class="metric"><div class="label">{{.Copy.Miners}}</div><div class="value">{{.Miners}}</div></div>
-          <div class="metric"><div class="label">{{.Copy.Accepted}}</div><div class="value">{{.Accepted}}</div></div>
           <div class="metric"><div class="label">{{.Copy.Solved}}</div><div class="value">{{.Solved}}</div></div>
           <div class="metric"><div class="label">{{.Copy.Fee}}</div><div class="value">{{.Fee}}</div></div>
           <div class="metric"><div class="label">{{.Copy.CurrentRound}}</div><div class="value">{{.CurrentRoundID}}</div></div>
@@ -345,12 +367,14 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
     <section class="grid">
       <div class="panel">
         <h2>{{.Copy.Workers}}</h2>
-        {{if .Status.Pool.Workers}}
+        {{if hasOnlineWorkers .Status.Pool.Workers}}
         <table>
           <thead><tr><th>{{.Copy.Worker}}</th><th>{{.Copy.Difficulty}}</th><th>{{.Copy.Accepted}}</th><th>{{.Copy.Rejected}}</th><th>{{.Copy.LastShare}}</th></tr></thead>
           <tbody>
           {{range .Status.Pool.Workers}}
+            {{if .Online}}
             <tr><td>{{.Name}}</td><td>{{printf "%.2f" .Difficulty}}</td><td>{{.Accepted}}</td><td>{{.Rejected}}</td><td>{{timeText .LastShareAt}}</td></tr>
+            {{end}}
           {{end}}
           </tbody>
         </table>
@@ -383,6 +407,26 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
 
     <footer>{{.Copy.Updated}} {{.Updated}}</footer>
   </main>
+  <script>
+    (function () {
+      var key = "pacpool-theme";
+      var buttons = Array.prototype.slice.call(document.querySelectorAll("[data-theme-choice]"));
+      function apply(theme) {
+        if (theme !== "dark") theme = "light";
+        document.body.setAttribute("data-theme", theme);
+        try { localStorage.setItem(key, theme); } catch (error) {}
+        buttons.forEach(function (button) {
+          button.classList.toggle("active", button.getAttribute("data-theme-choice") === theme);
+        });
+      }
+      var saved = "light";
+      try { saved = localStorage.getItem(key) || saved; } catch (error) {}
+      buttons.forEach(function (button) {
+        button.addEventListener("click", function () { apply(button.getAttribute("data-theme-choice")); });
+      });
+      apply(saved);
+    })();
+  </script>
 </body>
 </html>`))
 
@@ -518,6 +562,9 @@ func dashboardCopyFor(lang string) dashboardCopy {
 		StratumClosedNote: "Miner connections stay closed until the official pool mining address is configured.",
 		TemplateReady:     "Available",
 		TemplateWaiting:   "Not available",
+		ThemeLabel:        "Theme",
+		DayMode:           "Day",
+		NightMode:         "Night",
 	}
 	switch lang {
 	case "zh-CN":
@@ -581,6 +628,9 @@ func dashboardCopyFor(lang string) dashboardCopy {
 		base.StratumClosedNote = "矿池收币地址配置完成前，矿工连接入口保持关闭。"
 		base.TemplateReady = "可用"
 		base.TemplateWaiting = "不可用"
+		base.ThemeLabel = "模式"
+		base.DayMode = "白天"
+		base.NightMode = "夜晚"
 	case "ja":
 		base.Lang = "ja"
 		base.Title = "Pingancoin プール"
@@ -642,6 +692,9 @@ func dashboardCopyFor(lang string) dashboardCopy {
 		base.StratumClosedNote = "公式プール採掘アドレスが設定されるまで、マイナー接続は閉じたままです。"
 		base.TemplateReady = "利用可能"
 		base.TemplateWaiting = "利用不可"
+		base.ThemeLabel = "テーマ"
+		base.DayMode = "昼"
+		base.NightMode = "夜"
 	case "ko":
 		base.Lang = "ko"
 		base.Title = "Pingancoin 풀"
@@ -703,6 +756,9 @@ func dashboardCopyFor(lang string) dashboardCopy {
 		base.StratumClosedNote = "공식 풀 채굴 주소가 설정될 때까지 채굴자 연결은 닫혀 있습니다."
 		base.TemplateReady = "사용 가능"
 		base.TemplateWaiting = "사용 불가"
+		base.ThemeLabel = "테마"
+		base.DayMode = "낮"
+		base.NightMode = "밤"
 	}
 	return base
 }
@@ -754,6 +810,15 @@ func formatPAC(atoms int64) string {
 	whole := atoms / 100_000_000
 	frac := atoms % 100_000_000
 	return fmt.Sprintf("%s%d.%08d PAC", sign, whole, frac)
+}
+
+func hasOnlineWorkers(workers []service.WorkerState) bool {
+	for _, worker := range workers {
+		if worker.Online {
+			return true
+		}
+	}
+	return false
 }
 
 func formatDifficulty(values ...string) string {
