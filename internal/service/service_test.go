@@ -268,10 +268,10 @@ func TestRecordShareUpdatesPoolAndWorkers(t *testing.T) {
 	if len(snapshot.Pool.Workers) != 2 {
 		t.Fatalf("worker count = %d, want 2", len(snapshot.Pool.Workers))
 	}
-	if snapshot.Pool.Workers[0].Name != "miner.b" || snapshot.Pool.Workers[0].SolvedBlocks != 1 {
+	if snapshot.Pool.Workers[0].Name != "miner.a" || snapshot.Pool.Workers[0].Rejected != 1 || snapshot.Pool.Workers[0].Difficulty != 5 || snapshot.Pool.Workers[0].LastError != "" {
 		t.Fatalf("unexpected top worker: %+v", snapshot.Pool.Workers[0])
 	}
-	if snapshot.Pool.Workers[1].Name != "miner.a" || snapshot.Pool.Workers[1].Rejected != 1 || snapshot.Pool.Workers[1].Difficulty != 5 || snapshot.Pool.Workers[1].LastError != "" {
+	if snapshot.Pool.Workers[1].Name != "miner.b" || snapshot.Pool.Workers[1].SolvedBlocks != 1 {
 		t.Fatalf("unexpected second worker: %+v", snapshot.Pool.Workers[1])
 	}
 	if snapshot.Pool.CurrentRound.AcceptedShares != 3 || snapshot.Pool.CurrentRound.AcceptedWork != 7.5 {

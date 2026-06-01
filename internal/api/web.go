@@ -76,7 +76,6 @@ type dashboardCopy struct {
 	StratumClosedNote string
 	TemplateReady     string
 	TemplateWaiting   string
-	ThemeLabel        string
 	DayMode           string
 	NightMode         string
 }
@@ -165,18 +164,13 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
     .subtitle { margin: 0; color: var(--muted); max-width: 720px; font-size: 16px; }
     .header-tools { display: grid; justify-items: end; gap: 10px; }
     .langs { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
-    .theme-toggle { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 13px; }
-    .theme-toggle button {
+    .theme-toggle {
       min-height: 32px;
       border-color: var(--line);
       background: var(--panel);
       color: var(--text);
       padding: 4px 11px;
-    }
-    .theme-toggle button.active {
-      border-color: var(--accent);
-      background: var(--accent);
-      color: #fff;
+      font-size: 13px;
     }
     .langs a, .pill {
       min-height: 32px;
@@ -191,12 +185,7 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
     }
     .pill.ok { border-color: rgba(46, 125, 91, .45); color: var(--accent-strong); }
     .pill.warn { border-color: rgba(160, 90, 19, .45); color: var(--warn); }
-    .hero {
-      display: grid;
-      grid-template-columns: minmax(0, 1.4fr) minmax(280px, .6fr);
-      gap: 16px;
-      margin-bottom: 16px;
-    }
+    .hero { margin-bottom: 16px; }
     .panel {
       background: var(--panel);
       border: 1px solid var(--line);
@@ -206,7 +195,7 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
     }
     .metrics {
       display: grid;
-      grid-template-columns: repeat(4, minmax(130px, 1fr));
+      grid-template-columns: repeat(4, minmax(140px, 1fr));
       gap: 12px;
     }
     .metric {
@@ -218,13 +207,13 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
     }
     .label { color: var(--muted); font-size: 13px; margin-bottom: 7px; }
     .value { font-size: 24px; font-weight: 700; line-height: 1.15; word-break: break-word; }
-    .side { display: grid; gap: 12px; align-content: start; }
     h2 { margin: 0 0 12px; font-size: 19px; line-height: 1.2; }
     .note { margin: 10px 0 0; color: var(--muted); }
     .links { display: grid; gap: 9px; }
     .linkrow { display: flex; justify-content: space-between; gap: 12px; border-bottom: 1px solid var(--line); padding-bottom: 8px; }
     .linkrow:last-child { border-bottom: 0; padding-bottom: 0; }
-    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+    .grid { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(320px, .9fr); gap: 16px; }
+    .stack { display: grid; gap: 16px; }
     .guide { display: grid; grid-template-columns: repeat(3, minmax(160px, 1fr)); gap: 12px; }
     .guide-item { background: var(--panel-soft); border: 1px solid var(--line); border-radius: 8px; padding: 13px; min-width: 0; }
     .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; word-break: break-all; }
@@ -253,7 +242,7 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
     .empty { color: var(--muted); padding: 18px 0 4px; }
     footer { margin-top: 18px; color: var(--muted); font-size: 13px; }
     @media (max-width: 860px) {
-      header, .hero, .grid, .guide { grid-template-columns: 1fr; display: grid; }
+      header, .grid, .guide { grid-template-columns: 1fr; display: grid; }
       header { gap: 12px; }
       .header-tools { justify-items: start; }
       .langs { justify-content: flex-start; }
@@ -281,11 +270,7 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
           <a href="/?lang=ja">{{.Copy.LangJapanese}}</a>
           <a href="/?lang=ko">{{.Copy.LangKorean}}</a>
         </nav>
-        <div class="theme-toggle" aria-label="{{.Copy.ThemeLabel}}">
-          <span>{{.Copy.ThemeLabel}}</span>
-          <button type="button" data-theme-choice="light">{{.Copy.DayMode}}</button>
-          <button type="button" data-theme-choice="dark">{{.Copy.NightMode}}</button>
-        </div>
+        <button class="theme-toggle" type="button" data-day-label="{{.Copy.DayMode}}" data-night-label="{{.Copy.NightMode}}">{{.Copy.NightMode}}</button>
       </div>
     </header>
 
@@ -299,100 +284,90 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
           <div class="metric"><div class="label">{{.Copy.Miners}}</div><div class="value">{{.Miners}}</div></div>
           <div class="metric"><div class="label">{{.Copy.Solved}}</div><div class="value">{{.Solved}}</div></div>
           <div class="metric"><div class="label">{{.Copy.Fee}}</div><div class="value">{{.Fee}}</div></div>
-          <div class="metric"><div class="label">{{.Copy.CurrentRound}}</div><div class="value">{{.CurrentRoundID}}</div></div>
         </div>
       </div>
-      <aside class="side">
-        <div class="panel">
-          <h2>{{.Copy.Stratum}}</h2>
-          <span class="pill {{if .Status.Pool.ReadyForStratum}}ok{{else}}warn{{end}}">{{.StratumLabel}}</span>
-          <p class="note">{{.StratumHost}}</p>
-          {{if not .Status.Pool.ReadyForStratum}}<p class="note">{{.StratumNote}}</p>{{end}}
-        </div>
-        <div class="panel">
-          <h2>{{.Copy.Template}}</h2>
-          <span class="pill {{if .Status.Pool.Template.Available}}ok{{else}}warn{{end}}">{{.TemplateLabel}}</span>
-          <p class="note">{{.Copy.Updated}} {{.Updated}}</p>
-        </div>
-      </aside>
-    </section>
-
-    <section class="panel" style="margin-bottom:16px">
-      <h2>{{.Copy.MiningGuide}}</h2>
-      <div class="guide">
-        <div class="guide-item"><div class="label">{{.Copy.MiningURL}}</div><div class="mono">{{.MiningURL}}</div></div>
-        <div class="guide-item"><div class="label">{{.Copy.MiningUsername}}</div><div class="mono">{{.UsernameSample}}</div></div>
-        <div class="guide-item"><div class="label">{{.Copy.MiningPassword}}</div><div>{{.Copy.MiningPasswordAny}}</div></div>
-      </div>
-      <p class="note">{{.Copy.MiningExample}}</p>
-    </section>
-
-    <section class="panel" style="margin-bottom:16px">
-      <h2>{{.Copy.MinerLookup}}</h2>
-      <form method="get" class="miner-search">
-        <input type="hidden" name="lang" value="{{.Copy.Lang}}">
-        <input name="miner" value="{{.MinerQuery}}" placeholder="{{.Copy.MinerAddress}}" autocomplete="off">
-        <button type="submit">{{.Copy.Lookup}}</button>
-      </form>
-      {{if .MinerSearched}}
-        {{if .MinerFound}}
-        <div class="metrics miner-metrics">
-          <div class="metric"><div class="label">{{.Copy.OnlineMachines}}</div><div class="value">{{.MinerStats.OnlineMachines}}</div></div>
-          <div class="metric"><div class="label">{{.Copy.TotalEarned}}</div><div class="value">{{.MinerTotal}}</div></div>
-          <div class="metric"><div class="label">{{.Copy.TotalPaid}}</div><div class="value">{{.MinerPaid}}</div></div>
-          <div class="metric"><div class="label">{{.Copy.TodayEarned}}</div><div class="value">{{.MinerToday}}</div></div>
-          <div class="metric"><div class="label">{{.Copy.Unpaid}}</div><div class="value">{{.MinerUnpaid}}</div></div>
-        </div>
-        <p class="note">{{.Copy.LastPayment}} {{.MinerLastPay}}</p>
-        {{else}}
-        <div class="empty">{{.Copy.NoMinerData}}</div>
-        {{end}}
-      {{end}}
-    </section>
-
-    <section class="panel" style="margin-bottom:16px">
-      <h2>{{.Copy.PaymentRecords}}</h2>
-      {{if .Status.Pool.Payments}}
-      <table>
-        <thead><tr><th>{{.Copy.PaymentTime}}</th><th>{{.Copy.PaymentAmount}}</th><th>{{.Copy.PaymentRecipients}}</th><th>{{.Copy.PaymentTxID}}</th></tr></thead>
-        <tbody>
-        {{range .Status.Pool.Payments}}
-          <tr><td>{{timeText .CreatedAt}}</td><td>{{formatPAC .Total}}</td><td>{{len .Payouts}}</td><td class="mono">{{shortText .TxID 18}}</td></tr>
-        {{end}}
-        </tbody>
-      </table>
-      {{else}}<div class="empty">{{.Copy.NoPayments}}</div>{{end}}
     </section>
 
     <section class="grid">
-      <div class="panel">
-        <h2>{{.Copy.Workers}}</h2>
-        {{if hasOnlineWorkers .Status.Pool.Workers}}
-        <table>
-          <thead><tr><th>{{.Copy.Worker}}</th><th>{{.Copy.Difficulty}}</th><th>{{.Copy.Accepted}}</th><th>{{.Copy.Rejected}}</th><th>{{.Copy.LastShare}}</th></tr></thead>
-          <tbody>
-          {{range .Status.Pool.Workers}}
-            {{if .Online}}
-            <tr><td>{{.Name}}</td><td>{{printf "%.2f" .Difficulty}}</td><td>{{.Accepted}}</td><td>{{.Rejected}}</td><td>{{timeText .LastShareAt}}</td></tr>
+      <div class="stack">
+        <section class="panel">
+          <h2>{{.Copy.MiningGuide}}</h2>
+          <div class="guide">
+            <div class="guide-item"><div class="label">{{.Copy.MiningURL}}</div><div class="mono">{{.MiningURL}}</div></div>
+            <div class="guide-item"><div class="label">{{.Copy.MiningUsername}}</div><div class="mono">{{.UsernameSample}}</div></div>
+            <div class="guide-item"><div class="label">{{.Copy.MiningPassword}}</div><div>{{.Copy.MiningPasswordAny}}</div></div>
+          </div>
+          <p class="note">{{.Copy.MiningExample}}</p>
+        </section>
+
+        <section class="panel">
+          <h2>{{.Copy.MinerLookup}}</h2>
+          <form method="get" class="miner-search">
+            <input type="hidden" name="lang" value="{{.Copy.Lang}}">
+            <input name="miner" value="{{.MinerQuery}}" placeholder="{{.Copy.MinerAddress}}" autocomplete="off">
+            <button type="submit">{{.Copy.Lookup}}</button>
+          </form>
+          {{if .MinerSearched}}
+            {{if .MinerFound}}
+            <div class="metrics miner-metrics">
+              <div class="metric"><div class="label">{{.Copy.OnlineMachines}}</div><div class="value">{{.MinerStats.OnlineMachines}}</div></div>
+              <div class="metric"><div class="label">{{.Copy.TotalEarned}}</div><div class="value">{{.MinerTotal}}</div></div>
+              <div class="metric"><div class="label">{{.Copy.TotalPaid}}</div><div class="value">{{.MinerPaid}}</div></div>
+              <div class="metric"><div class="label">{{.Copy.TodayEarned}}</div><div class="value">{{.MinerToday}}</div></div>
+              <div class="metric"><div class="label">{{.Copy.Unpaid}}</div><div class="value">{{.MinerUnpaid}}</div></div>
+            </div>
+            <p class="note">{{.Copy.LastPayment}} {{.MinerLastPay}}</p>
+            {{else}}
+            <div class="empty">{{.Copy.NoMinerData}}</div>
             {{end}}
           {{end}}
-          </tbody>
-        </table>
-        {{else}}<div class="empty">{{.Copy.NoWorkers}}</div>{{end}}
+        </section>
+
+        <section class="panel">
+          <h2>{{.Copy.Workers}}</h2>
+          {{if hasOnlineWorkers .Status.Pool.Workers}}
+          <table>
+            <thead><tr><th>{{.Copy.Worker}}</th><th>{{.Copy.Difficulty}}</th><th>{{.Copy.Accepted}}</th><th>{{.Copy.Rejected}}</th><th>{{.Copy.LastShare}}</th></tr></thead>
+            <tbody>
+            {{range .Status.Pool.Workers}}
+              {{if .Online}}
+              <tr><td>{{.Name}}</td><td>{{printf "%.2f" .Difficulty}}</td><td>{{.Accepted}}</td><td>{{.Rejected}}</td><td>{{timeText .LastShareAt}}</td></tr>
+              {{end}}
+            {{end}}
+            </tbody>
+          </table>
+          {{else}}<div class="empty">{{.Copy.NoWorkers}}</div>{{end}}
+        </section>
       </div>
 
-      <div class="panel">
-        <h2>{{.Copy.RecentRounds}}</h2>
-        {{if .Status.Pool.RecentRounds}}
-        <table>
-          <thead><tr><th>{{.Copy.Round}}</th><th>{{.Copy.State}}</th><th>{{.Copy.Work}}</th><th>{{.Copy.Block}}</th></tr></thead>
-          <tbody>
-          {{range .Status.Pool.RecentRounds}}
-            <tr><td>#{{.ID}}</td><td>{{if .Solved}}solved{{else}}open{{end}}</td><td>{{printf "%.2f" .AcceptedWork}}</td><td>{{if .BlockHash}}{{.BlockHeight}}{{else}}-{{end}}</td></tr>
-          {{end}}
-          </tbody>
-        </table>
-        {{else}}<div class="empty">{{.Copy.NoRounds}}</div>{{end}}
+      <div class="stack">
+        <section class="panel">
+          <h2>{{.Copy.RecentRounds}}</h2>
+          {{if .Status.Pool.RecentRounds}}
+          <table>
+            <thead><tr><th>{{.Copy.Round}}</th><th>{{.Copy.State}}</th><th>{{.Copy.Work}}</th><th>{{.Copy.Block}}</th></tr></thead>
+            <tbody>
+            {{range .Status.Pool.RecentRounds}}
+              <tr><td>#{{.ID}}</td><td>{{if .Solved}}solved{{else}}open{{end}}</td><td>{{printf "%.2f" .AcceptedWork}}</td><td>{{if .BlockHash}}{{.BlockHeight}}{{else}}-{{end}}</td></tr>
+            {{end}}
+            </tbody>
+          </table>
+          {{else}}<div class="empty">{{.Copy.NoRounds}}</div>{{end}}
+        </section>
+
+        <section class="panel">
+          <h2>{{.Copy.PaymentRecords}}</h2>
+          {{if .Status.Pool.Payments}}
+          <table>
+            <thead><tr><th>{{.Copy.PaymentTime}}</th><th>{{.Copy.PaymentAmount}}</th><th>{{.Copy.PaymentRecipients}}</th><th>{{.Copy.PaymentTxID}}</th></tr></thead>
+            <tbody>
+            {{range .Status.Pool.Payments}}
+              <tr><td>{{timeText .CreatedAt}}</td><td>{{formatPAC .Total}}</td><td>{{len .Payouts}}</td><td class="mono">{{shortText .TxID 18}}</td></tr>
+            {{end}}
+            </tbody>
+          </table>
+          {{else}}<div class="empty">{{.Copy.NoPayments}}</div>{{end}}
+        </section>
       </div>
     </section>
 
@@ -410,19 +385,17 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
   <script>
     (function () {
       var key = "pacpool-theme";
-      var buttons = Array.prototype.slice.call(document.querySelectorAll("[data-theme-choice]"));
+      var button = document.querySelector(".theme-toggle");
       function apply(theme) {
         if (theme !== "dark") theme = "light";
         document.body.setAttribute("data-theme", theme);
         try { localStorage.setItem(key, theme); } catch (error) {}
-        buttons.forEach(function (button) {
-          button.classList.toggle("active", button.getAttribute("data-theme-choice") === theme);
-        });
+        if (button) button.textContent = theme === "dark" ? button.getAttribute("data-day-label") : button.getAttribute("data-night-label");
       }
       var saved = "light";
       try { saved = localStorage.getItem(key) || saved; } catch (error) {}
-      buttons.forEach(function (button) {
-        button.addEventListener("click", function () { apply(button.getAttribute("data-theme-choice")); });
+      if (button) button.addEventListener("click", function () {
+        apply(document.body.getAttribute("data-theme") === "dark" ? "light" : "dark");
       });
       apply(saved);
     })();
@@ -522,8 +495,8 @@ func dashboardCopyFor(lang string) dashboardCopy {
 		Difficulty:        "Difficulty",
 		Rejected:          "Rejected",
 		LastShare:         "Last share",
-		RecentRounds:      "Recent rounds",
-		NoRounds:          "No completed rounds yet.",
+		RecentRounds:      "Block records",
+		NoRounds:          "No block records yet.",
 		Round:             "Round",
 		State:             "State",
 		Work:              "Work",
@@ -562,7 +535,6 @@ func dashboardCopyFor(lang string) dashboardCopy {
 		StratumClosedNote: "Miner connections stay closed until the official pool mining address is configured.",
 		TemplateReady:     "Available",
 		TemplateWaiting:   "Not available",
-		ThemeLabel:        "Theme",
 		DayMode:           "Day",
 		NightMode:         "Night",
 	}
@@ -592,8 +564,8 @@ func dashboardCopyFor(lang string) dashboardCopy {
 		base.Difficulty = "难度"
 		base.Rejected = "拒绝"
 		base.LastShare = "最近份额"
-		base.RecentRounds = "最近轮次"
-		base.NoRounds = "暂无完成轮次。"
+		base.RecentRounds = "出块记录"
+		base.NoRounds = "暂无出块记录。"
 		base.Round = "轮次"
 		base.State = "状态"
 		base.Work = "工作量"
@@ -628,7 +600,6 @@ func dashboardCopyFor(lang string) dashboardCopy {
 		base.StratumClosedNote = "矿池收币地址配置完成前，矿工连接入口保持关闭。"
 		base.TemplateReady = "可用"
 		base.TemplateWaiting = "不可用"
-		base.ThemeLabel = "模式"
 		base.DayMode = "白天"
 		base.NightMode = "夜晚"
 	case "ja":
@@ -656,8 +627,8 @@ func dashboardCopyFor(lang string) dashboardCopy {
 		base.Difficulty = "難易度"
 		base.Rejected = "拒否"
 		base.LastShare = "最終シェア"
-		base.RecentRounds = "最近のラウンド"
-		base.NoRounds = "完了したラウンドはまだありません。"
+		base.RecentRounds = "ブロック記録"
+		base.NoRounds = "ブロック記録はまだありません。"
 		base.Round = "ラウンド"
 		base.State = "状態"
 		base.Work = "作業量"
@@ -692,7 +663,6 @@ func dashboardCopyFor(lang string) dashboardCopy {
 		base.StratumClosedNote = "公式プール採掘アドレスが設定されるまで、マイナー接続は閉じたままです。"
 		base.TemplateReady = "利用可能"
 		base.TemplateWaiting = "利用不可"
-		base.ThemeLabel = "テーマ"
 		base.DayMode = "昼"
 		base.NightMode = "夜"
 	case "ko":
@@ -720,8 +690,8 @@ func dashboardCopyFor(lang string) dashboardCopy {
 		base.Difficulty = "난이도"
 		base.Rejected = "거부"
 		base.LastShare = "마지막 공유"
-		base.RecentRounds = "최근 라운드"
-		base.NoRounds = "완료된 라운드가 아직 없습니다."
+		base.RecentRounds = "블록 기록"
+		base.NoRounds = "아직 블록 기록이 없습니다."
 		base.Round = "라운드"
 		base.State = "상태"
 		base.Work = "작업량"
@@ -756,7 +726,6 @@ func dashboardCopyFor(lang string) dashboardCopy {
 		base.StratumClosedNote = "공식 풀 채굴 주소가 설정될 때까지 채굴자 연결은 닫혀 있습니다."
 		base.TemplateReady = "사용 가능"
 		base.TemplateWaiting = "사용 불가"
-		base.ThemeLabel = "테마"
 		base.DayMode = "낮"
 		base.NightMode = "밤"
 	}

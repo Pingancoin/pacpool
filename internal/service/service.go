@@ -796,6 +796,12 @@ func (s *Service) sortedWorkersLocked() []WorkerState {
 		workers = append(workers, clone)
 	}
 	sort.Slice(workers, func(i, j int) bool {
+		if workers[i].Online != workers[j].Online {
+			return workers[i].Online
+		}
+		if workers[i].Difficulty != workers[j].Difficulty {
+			return workers[i].Difficulty > workers[j].Difficulty
+		}
 		if workers[i].SolvedBlocks != workers[j].SolvedBlocks {
 			return workers[i].SolvedBlocks > workers[j].SolvedBlocks
 		}
