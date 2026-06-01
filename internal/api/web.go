@@ -62,6 +62,7 @@ type dashboardCopy struct {
 	MiningExample     string
 	MiningPasswordAny string
 	MinerDownload     string
+	WalletDownload    string
 	ViewWorkers       string
 	HomeNav           string
 	BlocksNav         string
@@ -118,6 +119,7 @@ type dashboardView struct {
 	WorkersURL     string
 	BlocksURL      string
 	MinerURL       string
+	WalletURL      string
 	MinerQuery     string
 	MinerSearched  bool
 	MinerFound     bool
@@ -367,6 +369,7 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
             <div class="guide-item"><div class="label">{{.Copy.MiningUsername}}</div><div class="mono">{{.UsernameSample}}</div></div>
             <div class="guide-item"><div class="label">{{.Copy.MiningPassword}}</div><div>{{.Copy.MiningPasswordAny}}</div></div>
             <div class="guide-item"><div class="label">{{.Copy.MinerDownload}}</div><div><a href="{{.MinerURL}}">github.com/Pingancoin/pacminer</a></div></div>
+            <div class="guide-item"><div class="label">{{.Copy.WalletDownload}}</div><div><a href="{{.WalletURL}}">pingancoin.org/#wallet</a></div></div>
           </div>
           <p class="note">{{.Copy.MiningExample}}</p>
         </section>
@@ -635,6 +638,7 @@ func renderDashboard(w http.ResponseWriter, r *http.Request, svc *service.Servic
 		WorkersURL:     "/workers?lang=" + copy.Lang,
 		BlocksURL:      "/blocks?lang=" + copy.Lang,
 		MinerURL:       "https://github.com/Pingancoin/pacminer",
+		WalletURL:      "https://www.pingancoin.org/#wallet",
 		MinerQuery:     minerQuery,
 		MinerSearched:  minerQuery != "",
 		MinerFound:     minerFound,
@@ -741,6 +745,7 @@ func dashboardCopyFor(lang string) dashboardCopy {
 		MiningExample:     "Use your own PAC wallet address as the username. Add a dot and rig name to distinguish machines.",
 		MiningPasswordAny: "Any value is accepted.",
 		MinerDownload:     "Miner download",
+		WalletDownload:    "Wallet download",
 		ViewWorkers:       "Miner ranking",
 		HomeNav:           "Home",
 		BlocksNav:         "Block records",
@@ -818,6 +823,7 @@ func dashboardCopyFor(lang string) dashboardCopy {
 		base.MiningExample = "用户名填写自己的 PAC 钱包地址；多台矿机可在地址后加点号和矿工名区分。"
 		base.MiningPasswordAny = "任意填写即可。"
 		base.MinerDownload = "矿工下载"
+		base.WalletDownload = "钱包下载"
 		base.ViewWorkers = "矿工排行"
 		base.HomeNav = "首页"
 		base.BlocksNav = "出块记录"
@@ -889,6 +895,7 @@ func dashboardCopyFor(lang string) dashboardCopy {
 		base.MiningExample = "ユーザー名には自分の PAC ウォレットアドレスを使い、ドットとリグ名で機器を区別できます。"
 		base.MiningPasswordAny = "任意の値で構いません。"
 		base.MinerDownload = "マイナーDL"
+		base.WalletDownload = "ウォレットDL"
 		base.ViewWorkers = "マイナーランキング"
 		base.HomeNav = "ホーム"
 		base.BlocksNav = "ブロック記録"
@@ -960,6 +967,7 @@ func dashboardCopyFor(lang string) dashboardCopy {
 		base.MiningExample = "사용자 이름은 본인의 PAC 지갑 주소를 사용하고, 점과 장비 이름을 붙여 구분할 수 있습니다."
 		base.MiningPasswordAny = "아무 값이나 사용할 수 있습니다."
 		base.MinerDownload = "채굴기 다운로드"
+		base.WalletDownload = "지갑 다운로드"
 		base.ViewWorkers = "채굴자 순위"
 		base.HomeNav = "홈"
 		base.BlocksNav = "블록 기록"
