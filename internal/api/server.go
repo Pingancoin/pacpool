@@ -32,6 +32,7 @@ func New(svc *service.Service, opts ...Options) *Server {
 	s.mux.HandleFunc("/healthz", s.handleHealth)
 	s.mux.HandleFunc("/status", s.handleStatus)
 	s.mux.HandleFunc("/workers", s.handleWorkers)
+	s.mux.HandleFunc("/blocks", s.handleBlocks)
 	s.mux.HandleFunc("/miner/", s.handleMiner)
 	s.mux.HandleFunc("/admin", s.handleAdmin)
 	s.mux.HandleFunc("/admin/login", s.handleAdminLogin)
@@ -66,6 +67,20 @@ func (s *Server) handleWorkers(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := renderWorkers(w, r, s.service); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "workers render failed"})
+	}
+}
+
+func (s *Server) handleBlocks(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path != "/blocks" {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
+		return
+	}
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	if err := renderBlocks(w, r, s.service); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "blocks render failed"})
 	}
 }
 

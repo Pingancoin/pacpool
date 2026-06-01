@@ -365,6 +365,7 @@ func New(pacd PACDSource, pacdata PACDataSource, opts Options) (*Service, error)
 
 func (s *Service) Run(ctx context.Context) error {
 	s.Refresh(ctx)
+	_, _, _ = s.TryAutoPayout(ctx)
 	ticker := time.NewTicker(s.interval)
 	defer ticker.Stop()
 	payoutTicker := time.NewTicker(s.payoutEvery)
