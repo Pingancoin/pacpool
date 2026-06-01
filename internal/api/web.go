@@ -59,6 +59,7 @@ type dashboardCopy struct {
 	MiningPassword    string
 	MiningExample     string
 	MiningPasswordAny string
+	MinerDownload     string
 	ViewWorkers       string
 	HomeNav           string
 	BlocksNav         string
@@ -76,6 +77,8 @@ type dashboardCopy struct {
 	LangChinese       string
 	LangJapanese      string
 	LangKorean        string
+	ThemeBlack        string
+	ThemeWhite        string
 	StratumClosedNote string
 	TemplateReady     string
 	TemplateWaiting   string
@@ -110,6 +113,7 @@ type dashboardView struct {
 	UsernameSample string
 	WorkersURL     string
 	BlocksURL      string
+	MinerURL       string
 	MinerQuery     string
 	MinerSearched  bool
 	MinerFound     bool
@@ -169,16 +173,18 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
     .subtitle { margin: 0; color: var(--muted); max-width: 720px; font-size: 16px; }
     .header-tools { display: grid; justify-items: end; gap: 10px; }
     .page-nav { display: flex; gap: 18px; flex-wrap: wrap; justify-content: center; margin-top: 48px; }
-    .langs { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
-    .theme-toggle {
+    .controls { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+    .theme-toggle, .language-select {
       min-height: 32px;
-      border-color: var(--line);
+      border: 1px solid var(--line);
+      border-radius: 999px;
       background: var(--panel);
       color: var(--text);
       padding: 4px 11px;
       font-size: 13px;
     }
-    .page-nav a, .langs a, .pill {
+    .language-select { padding-right: 28px; }
+    .page-nav a, .pill {
       min-height: 32px;
       display: inline-flex;
       align-items: center;
@@ -268,7 +274,7 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
       .header-tools { justify-items: start; }
       .page-nav { justify-content: flex-start; margin-top: 0; gap: 8px; }
       .page-nav a { min-height: 34px; padding: 4px 11px; font-size: 14px; }
-      .langs { justify-content: flex-start; }
+      .controls { justify-content: flex-start; }
       .metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .lookup-bar { grid-template-columns: 1fr; gap: 10px; }
       .lookup-bar h2 { white-space: normal; }
@@ -294,13 +300,15 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
         <a href="{{.BlocksURL}}">{{.Copy.BlocksNav}}</a>
       </nav>
       <div class="header-tools">
-        <nav class="langs" aria-label="Language">
-          <a href="/?lang=en">{{.Copy.LangEnglish}}</a>
-          <a href="/?lang=zh-CN">{{.Copy.LangChinese}}</a>
-          <a href="/?lang=ja">{{.Copy.LangJapanese}}</a>
-          <a href="/?lang=ko">{{.Copy.LangKorean}}</a>
-        </nav>
-        <button class="theme-toggle" type="button" data-day-label="{{.Copy.DayMode}}" data-night-label="{{.Copy.NightMode}}">{{.Copy.NightMode}}</button>
+        <div class="controls">
+          <button class="theme-toggle" type="button" data-dark-label="{{.Copy.ThemeBlack}}" data-light-label="{{.Copy.ThemeWhite}}">{{.Copy.ThemeBlack}}</button>
+          <select class="language-select" data-path="/">
+            <option value="en" {{if eq .Copy.Lang "en"}}selected{{end}}>English</option>
+            <option value="zh-CN" {{if eq .Copy.Lang "zh-CN"}}selected{{end}}>简体中文</option>
+            <option value="ja" {{if eq .Copy.Lang "ja"}}selected{{end}}>日本語</option>
+            <option value="ko" {{if eq .Copy.Lang "ko"}}selected{{end}}>한국어</option>
+          </select>
+        </div>
       </div>
     </header>
 
@@ -352,6 +360,7 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
             <div class="guide-item"><div class="label">{{.Copy.MiningURL}}</div><div class="mono">{{.MiningURL}}</div></div>
             <div class="guide-item"><div class="label">{{.Copy.MiningUsername}}</div><div class="mono">{{.UsernameSample}}</div></div>
             <div class="guide-item"><div class="label">{{.Copy.MiningPassword}}</div><div>{{.Copy.MiningPasswordAny}}</div></div>
+            <div class="guide-item"><div class="label">{{.Copy.MinerDownload}}</div><div><a href="{{.MinerURL}}">github.com/Pingancoin/pacminer</a></div></div>
           </div>
           <p class="note">{{.Copy.MiningExample}}</p>
         </section>
@@ -389,16 +398,20 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
     (function () {
       var key = "pacpool-theme";
       var button = document.querySelector(".theme-toggle");
+      var lang = document.querySelector(".language-select");
       function apply(theme) {
         if (theme !== "dark") theme = "light";
         document.body.setAttribute("data-theme", theme);
         try { localStorage.setItem(key, theme); } catch (error) {}
-        if (button) button.textContent = theme === "dark" ? button.getAttribute("data-day-label") : button.getAttribute("data-night-label");
+        if (button) button.textContent = theme === "dark" ? button.getAttribute("data-light-label") : button.getAttribute("data-dark-label");
       }
       var saved = "light";
       try { saved = localStorage.getItem(key) || saved; } catch (error) {}
       if (button) button.addEventListener("click", function () {
         apply(document.body.getAttribute("data-theme") === "dark" ? "light" : "dark");
+      });
+      if (lang) lang.addEventListener("change", function () {
+        window.location.href = (lang.getAttribute("data-path") || "/") + "?lang=" + encodeURIComponent(lang.value);
       });
       apply(saved);
     })();
@@ -425,7 +438,7 @@ var workersTemplate = template.Must(template.New("workers").Funcs(template.FuncM
     .subtitle, .empty { color:var(--muted); }
     .panel { background:var(--panel); border:1px solid var(--line); border-radius:8px; box-shadow:var(--shadow); padding:18px; }
     .toolbar { display:flex; gap:8px; flex-wrap:wrap; justify-content:flex-end; }
-    .toolbar a, .toolbar button { min-height:32px; border:1px solid var(--line); border-radius:999px; padding:4px 11px; background:var(--panel); color:var(--text); font:inherit; cursor:pointer; }
+    .toolbar a, .toolbar button, .toolbar select { min-height:32px; border:1px solid var(--line); border-radius:999px; padding:4px 11px; background:var(--panel); color:var(--text); font:inherit; cursor:pointer; }
     table { width:100%; border-collapse:collapse; }
     th, td { padding:10px 8px; border-bottom:1px solid var(--line); text-align:left; vertical-align:top; }
     th { color:var(--muted); font-size:13px; font-weight:600; }
@@ -444,11 +457,13 @@ var workersTemplate = template.Must(template.New("workers").Funcs(template.FuncM
         <a href="/?lang={{.Copy.Lang}}">{{.Copy.HomeNav}}</a>
         <a href="/workers?lang={{.Copy.Lang}}">{{.Copy.ViewWorkers}}</a>
         <a href="/blocks?lang={{.Copy.Lang}}">{{.Copy.BlocksNav}}</a>
-        <a href="/workers?lang=en">{{.Copy.LangEnglish}}</a>
-        <a href="/workers?lang=zh-CN">{{.Copy.LangChinese}}</a>
-        <a href="/workers?lang=ja">{{.Copy.LangJapanese}}</a>
-        <a href="/workers?lang=ko">{{.Copy.LangKorean}}</a>
-        <button class="theme-toggle" type="button" data-day-label="{{.Copy.DayMode}}" data-night-label="{{.Copy.NightMode}}">{{.Copy.NightMode}}</button>
+        <button class="theme-toggle" type="button" data-dark-label="{{.Copy.ThemeBlack}}" data-light-label="{{.Copy.ThemeWhite}}">{{.Copy.ThemeBlack}}</button>
+        <select class="language-select" data-path="/workers">
+          <option value="en" {{if eq .Copy.Lang "en"}}selected{{end}}>English</option>
+          <option value="zh-CN" {{if eq .Copy.Lang "zh-CN"}}selected{{end}}>简体中文</option>
+          <option value="ja" {{if eq .Copy.Lang "ja"}}selected{{end}}>日本語</option>
+          <option value="ko" {{if eq .Copy.Lang "ko"}}selected{{end}}>한국어</option>
+        </select>
       </nav>
     </header>
     <section class="panel">
@@ -470,16 +485,20 @@ var workersTemplate = template.Must(template.New("workers").Funcs(template.FuncM
     (function () {
       var key = "pacpool-theme";
       var button = document.querySelector(".theme-toggle");
+      var lang = document.querySelector(".language-select");
       function apply(theme) {
         if (theme !== "dark") theme = "light";
         document.body.setAttribute("data-theme", theme);
         try { localStorage.setItem(key, theme); } catch (error) {}
-        if (button) button.textContent = theme === "dark" ? button.getAttribute("data-day-label") : button.getAttribute("data-night-label");
+        if (button) button.textContent = theme === "dark" ? button.getAttribute("data-light-label") : button.getAttribute("data-dark-label");
       }
       var saved = "light";
       try { saved = localStorage.getItem(key) || saved; } catch (error) {}
       if (button) button.addEventListener("click", function () {
         apply(document.body.getAttribute("data-theme") === "dark" ? "light" : "dark");
+      });
+      if (lang) lang.addEventListener("change", function () {
+        window.location.href = (lang.getAttribute("data-path") || "/") + "?lang=" + encodeURIComponent(lang.value);
       });
       apply(saved);
     })();
@@ -506,7 +525,7 @@ var blocksTemplate = template.Must(template.New("blocks").Funcs(template.FuncMap
     .subtitle, .empty { color:var(--muted); }
     .panel { background:var(--panel); border:1px solid var(--line); border-radius:8px; box-shadow:var(--shadow); padding:18px; }
     .toolbar { display:flex; gap:8px; flex-wrap:wrap; justify-content:flex-end; }
-    .toolbar a, .toolbar button { min-height:32px; border:1px solid var(--line); border-radius:999px; padding:4px 11px; background:var(--panel); color:var(--text); font:inherit; cursor:pointer; }
+    .toolbar a, .toolbar button, .toolbar select { min-height:32px; border:1px solid var(--line); border-radius:999px; padding:4px 11px; background:var(--panel); color:var(--text); font:inherit; cursor:pointer; }
     table { width:100%; border-collapse:collapse; }
     th, td { padding:10px 8px; border-bottom:1px solid var(--line); text-align:left; vertical-align:top; }
     th { color:var(--muted); font-size:13px; font-weight:600; }
@@ -524,11 +543,13 @@ var blocksTemplate = template.Must(template.New("blocks").Funcs(template.FuncMap
         <a href="/?lang={{.Copy.Lang}}">{{.Copy.HomeNav}}</a>
         <a href="/workers?lang={{.Copy.Lang}}">{{.Copy.ViewWorkers}}</a>
         <a href="/blocks?lang={{.Copy.Lang}}">{{.Copy.BlocksNav}}</a>
-        <a href="/blocks?lang=en">{{.Copy.LangEnglish}}</a>
-        <a href="/blocks?lang=zh-CN">{{.Copy.LangChinese}}</a>
-        <a href="/blocks?lang=ja">{{.Copy.LangJapanese}}</a>
-        <a href="/blocks?lang=ko">{{.Copy.LangKorean}}</a>
-        <button class="theme-toggle" type="button" data-day-label="{{.Copy.DayMode}}" data-night-label="{{.Copy.NightMode}}">{{.Copy.NightMode}}</button>
+        <button class="theme-toggle" type="button" data-dark-label="{{.Copy.ThemeBlack}}" data-light-label="{{.Copy.ThemeWhite}}">{{.Copy.ThemeBlack}}</button>
+        <select class="language-select" data-path="/blocks">
+          <option value="en" {{if eq .Copy.Lang "en"}}selected{{end}}>English</option>
+          <option value="zh-CN" {{if eq .Copy.Lang "zh-CN"}}selected{{end}}>简体中文</option>
+          <option value="ja" {{if eq .Copy.Lang "ja"}}selected{{end}}>日本語</option>
+          <option value="ko" {{if eq .Copy.Lang "ko"}}selected{{end}}>한국어</option>
+        </select>
       </nav>
     </header>
     <section class="panel">
@@ -548,16 +569,20 @@ var blocksTemplate = template.Must(template.New("blocks").Funcs(template.FuncMap
     (function () {
       var key = "pacpool-theme";
       var button = document.querySelector(".theme-toggle");
+      var lang = document.querySelector(".language-select");
       function apply(theme) {
         if (theme !== "dark") theme = "light";
         document.body.setAttribute("data-theme", theme);
         try { localStorage.setItem(key, theme); } catch (error) {}
-        if (button) button.textContent = theme === "dark" ? button.getAttribute("data-day-label") : button.getAttribute("data-night-label");
+        if (button) button.textContent = theme === "dark" ? button.getAttribute("data-light-label") : button.getAttribute("data-dark-label");
       }
       var saved = "light";
       try { saved = localStorage.getItem(key) || saved; } catch (error) {}
       if (button) button.addEventListener("click", function () {
         apply(document.body.getAttribute("data-theme") === "dark" ? "light" : "dark");
+      });
+      if (lang) lang.addEventListener("change", function () {
+        window.location.href = (lang.getAttribute("data-path") || "/") + "?lang=" + encodeURIComponent(lang.value);
       });
       apply(saved);
     })();
@@ -601,6 +626,7 @@ func renderDashboard(w http.ResponseWriter, r *http.Request, svc *service.Servic
 		UsernameSample: "PYourWalletAddress.rig01",
 		WorkersURL:     "/workers?lang=" + copy.Lang,
 		BlocksURL:      "/blocks?lang=" + copy.Lang,
+		MinerURL:       "https://github.com/Pingancoin/pacminer",
 		MinerQuery:     minerQuery,
 		MinerSearched:  minerQuery != "",
 		MinerFound:     minerFound,
@@ -704,6 +730,7 @@ func dashboardCopyFor(lang string) dashboardCopy {
 		MiningPassword:    "Password",
 		MiningExample:     "Use your own PAC wallet address as the username. Add a dot and rig name to distinguish machines.",
 		MiningPasswordAny: "Any value is accepted.",
+		MinerDownload:     "Miner download",
 		ViewWorkers:       "Miner ranking",
 		HomeNav:           "Home",
 		BlocksNav:         "Block records",
@@ -721,6 +748,8 @@ func dashboardCopyFor(lang string) dashboardCopy {
 		LangChinese:       "简体中文",
 		LangJapanese:      "日本語",
 		LangKorean:        "한국어",
+		ThemeBlack:        "Black",
+		ThemeWhite:        "White",
 		StratumClosedNote: "Miner connections stay closed until the official pool mining address is configured.",
 		TemplateReady:     "Available",
 		TemplateWaiting:   "Not available",
@@ -776,6 +805,7 @@ func dashboardCopyFor(lang string) dashboardCopy {
 		base.MiningPassword = "密码"
 		base.MiningExample = "用户名填写自己的 PAC 钱包地址；多台矿机可在地址后加点号和矿工名区分。"
 		base.MiningPasswordAny = "任意填写即可。"
+		base.MinerDownload = "矿工下载"
 		base.ViewWorkers = "矿工排行"
 		base.HomeNav = "首页"
 		base.BlocksNav = "出块记录"
@@ -789,6 +819,8 @@ func dashboardCopyFor(lang string) dashboardCopy {
 		base.Unpaid = "待结算"
 		base.NoMinerData = "没有找到这个地址的矿工记录。"
 		base.LastPayment = "最近付款："
+		base.ThemeBlack = "黑色"
+		base.ThemeWhite = "白色"
 		base.StratumClosedNote = "矿池收币地址配置完成前，矿工连接入口保持关闭。"
 		base.TemplateReady = "可用"
 		base.TemplateWaiting = "不可用"
@@ -842,6 +874,7 @@ func dashboardCopyFor(lang string) dashboardCopy {
 		base.MiningPassword = "パスワード"
 		base.MiningExample = "ユーザー名には自分の PAC ウォレットアドレスを使い、ドットとリグ名で機器を区別できます。"
 		base.MiningPasswordAny = "任意の値で構いません。"
+		base.MinerDownload = "マイナーDL"
 		base.ViewWorkers = "マイナーランキング"
 		base.HomeNav = "ホーム"
 		base.BlocksNav = "ブロック記録"
@@ -855,6 +888,8 @@ func dashboardCopyFor(lang string) dashboardCopy {
 		base.Unpaid = "未払い"
 		base.NoMinerData = "このアドレスのマイナー記録はありません。"
 		base.LastPayment = "最終支払い:"
+		base.ThemeBlack = "黒"
+		base.ThemeWhite = "白"
 		base.StratumClosedNote = "公式プール採掘アドレスが設定されるまで、マイナー接続は閉じたままです。"
 		base.TemplateReady = "利用可能"
 		base.TemplateWaiting = "利用不可"
@@ -908,6 +943,7 @@ func dashboardCopyFor(lang string) dashboardCopy {
 		base.MiningPassword = "비밀번호"
 		base.MiningExample = "사용자 이름은 본인의 PAC 지갑 주소를 사용하고, 점과 장비 이름을 붙여 구분할 수 있습니다."
 		base.MiningPasswordAny = "아무 값이나 사용할 수 있습니다."
+		base.MinerDownload = "채굴기 다운로드"
 		base.ViewWorkers = "채굴자 순위"
 		base.HomeNav = "홈"
 		base.BlocksNav = "블록 기록"
@@ -921,6 +957,8 @@ func dashboardCopyFor(lang string) dashboardCopy {
 		base.Unpaid = "미지급"
 		base.NoMinerData = "이 주소의 채굴자 기록이 없습니다."
 		base.LastPayment = "마지막 지급:"
+		base.ThemeBlack = "검정"
+		base.ThemeWhite = "흰색"
 		base.StratumClosedNote = "공식 풀 채굴 주소가 설정될 때까지 채굴자 연결은 닫혀 있습니다."
 		base.TemplateReady = "사용 가능"
 		base.TemplateWaiting = "사용 불가"
