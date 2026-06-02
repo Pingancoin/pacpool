@@ -56,6 +56,31 @@ func (fakePACData) Status(context.Context) (upstream.IndexStatus, error) {
 	return upstream.IndexStatus{Network: "simnet", IndexedHeight: 20, IndexedHash: "best"}, nil
 }
 
+func (fakePACData) Blocks(context.Context, int, int) (upstream.BlockList, error) {
+	return upstream.BlockList{
+		PageInfo: upstream.PageInfo{Page: 1, Limit: 100, Total: 1, TotalPages: 1},
+		Entries: []upstream.IndexedBlock{{
+			Height: 20,
+			Hash:   "best",
+			Time:   1780416800,
+			TxIDs:  []string{"coinbase20"},
+		}},
+	}, nil
+}
+
+func (fakePACData) Transaction(context.Context, string) (upstream.IndexedTx, error) {
+	return upstream.IndexedTx{
+		Hash:     "coinbase20",
+		Height:   20,
+		Coinbase: true,
+		Vout: []upstream.TxOut{{
+			N:       0,
+			Value:   95,
+			Address: "SminingAddr",
+		}},
+	}, nil
+}
+
 func TestServerStatusAndHealth(t *testing.T) {
 	svc, err := service.New(fakePACD{}, fakePACData{}, service.Options{
 		Interval:      time.Second,

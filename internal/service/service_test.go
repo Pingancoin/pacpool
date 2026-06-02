@@ -40,10 +40,29 @@ func (f fakePACD) SubmitBlock(context.Context, string) (bool, uint32, string, er
 type fakePACData struct {
 	status upstream.IndexStatus
 	err    error
+	blocks upstream.BlockList
+	tx     upstream.IndexedTx
 }
 
 func (f fakePACData) Status(context.Context) (upstream.IndexStatus, error) {
 	return f.status, f.err
+}
+
+func (f fakePACData) Blocks(context.Context, int, int) (upstream.BlockList, error) {
+	if f.err != nil {
+		return upstream.BlockList{}, f.err
+	}
+	if len(f.blocks.Entries) > 0 {
+		return f.blocks, nil
+	}
+	return upstream.BlockList{}, nil
+}
+
+func (f fakePACData) Transaction(context.Context, string) (upstream.IndexedTx, error) {
+	if f.err != nil {
+		return upstream.IndexedTx{}, f.err
+	}
+	return f.tx, nil
 }
 
 type fakePayoutSender struct {
@@ -58,6 +77,15 @@ func (f *fakePayoutSender) SendPayouts(_ context.Context, payouts []service.Payo
 		return "", f.err
 	}
 	return f.txid, nil
+}
+
+type fakeBalancePayoutSender struct {
+	fakePayoutSender
+	spendable int64
+}
+
+func (f *fakeBalancePayoutSender) SpendableBalance(context.Context) (int64, error) {
+	return f.spendable, nil
 }
 
 func TestServiceSnapshotHealthy(t *testing.T) {
@@ -496,6 +524,91 @@ func TestEqualPayoutWindowMeansAllDay(t *testing.T) {
 	}
 	if record.TxID != "all-day-tx" {
 		t.Fatalf("unexpected txid: %+v", record)
+	}
+}
+
+func TestTryAutoPayoutLimitsBatchToSpendableBalance(t *testing.T) {
+	base := time.Date(2026, 5, 18, 13, 0, 0, 0, time.UTC)
+	current := base
+	pacd := fakePACD{template: upstream.BlockTemplate{Height: 300}}
+	pacd.template.NextSubsidy.Miner = 500_000_000
+	sender := &fakeBalancePayoutSender{
+		fakePayoutSender: fakePayoutSender{txid: "limited-tx"},
+		spendable:        600_000_000,
+	}
+	svc, err := service.New(pacd, fakePACData{}, service.Options{
+		Interval:          time.Second,
+		FeeBPS:            500,
+		MiningAddr:        "SminingAddr",
+		ShareDiff:         1,
+		AutoPayout:        true,
+		PayoutMin:         50,
+		PayoutWindowStart: "00:00",
+		PayoutWindowEnd:   "00:00",
+		PayoutSender:      sender,
+		Now: func() time.Time {
+			return current
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc.Refresh(context.Background())
+	svc.RecordShare("Pbig.worker", true, true, "")
+	current = current.Add(time.Second)
+	svc.RecordSolvedBlock("Pbig.worker", 300, "block300")
+	svc.RecordShare("Pbig.worker", true, true, "")
+	current = current.Add(time.Second)
+	svc.RecordSolvedBlock("Pbig.worker", 301, "block301")
+	svc.RecordShare("Psmall.worker", true, true, "")
+	current = current.Add(time.Second)
+	svc.RecordSolvedBlock("Psmall.worker", 302, "block302")
+
+	record, ok, err := svc.TryAutoPayout(context.Background())
+	if err != nil || !ok {
+		t.Fatalf("auto payout failed: record=%+v ok=%v err=%v", record, ok, err)
+	}
+	if record.Total != 475_000_000 || len(sender.payouts) != 1 || sender.payouts[0].Worker != "Psmall" {
+		t.Fatalf("unexpected limited payout record=%+v sent=%+v", record, sender.payouts)
+	}
+	snapshot := svc.Snapshot()
+	if len(snapshot.Pool.PendingPayouts) != 1 || snapshot.Pool.PendingPayouts[0].Worker != "Pbig" {
+		t.Fatalf("unexpected remaining payouts: %+v", snapshot.Pool.PendingPayouts)
+	}
+}
+
+func TestPayoutStartHeightIgnoresLegacyUnpaidRounds(t *testing.T) {
+	base := time.Date(2026, 5, 18, 13, 0, 0, 0, time.UTC)
+	current := base
+	pacd := fakePACD{template: upstream.BlockTemplate{Height: 779}}
+	pacd.template.NextSubsidy.Miner = 1_000_000_000
+	svc, err := service.New(pacd, fakePACData{}, service.Options{
+		Interval:          time.Second,
+		FeeBPS:            500,
+		MiningAddr:        "SminingAddr",
+		ShareDiff:         1,
+		PayoutStartHeight: 779,
+		Now: func() time.Time {
+			return current
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc.Refresh(context.Background())
+	svc.RecordShare("Plegacy.worker", true, true, "")
+	current = current.Add(time.Second)
+	svc.RecordSolvedBlock("Plegacy.worker", 778, "old-block")
+	svc.RecordShare("Pnew.worker", true, true, "")
+	current = current.Add(time.Second)
+	svc.RecordSolvedBlock("Pnew.worker", 779, "new-block")
+
+	snapshot := svc.Snapshot()
+	if len(snapshot.Pool.PendingPayouts) != 1 || snapshot.Pool.PendingPayouts[0].Worker != "Pnew" {
+		t.Fatalf("unexpected pending payouts after start height: %+v", snapshot.Pool.PendingPayouts)
+	}
+	if stats, found := svc.MinerStats("Plegacy"); found && stats.Unpaid != 0 {
+		t.Fatalf("legacy miner should not keep unpaid balance: %+v", stats)
 	}
 }
 

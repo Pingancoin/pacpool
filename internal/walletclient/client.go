@@ -115,6 +115,37 @@ func (c *Client) SendPayouts(ctx context.Context, payouts []service.PayoutEntry)
 	return result.TxID, nil
 }
 
+func (c *Client) SpendableBalance(ctx context.Context) (int64, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/api/overview", nil)
+	if err != nil {
+		return 0, err
+	}
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+		req.Header.Set("X-PACWallet-Token", c.token)
+	}
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return 0, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return 0, fmt.Errorf("wallet overview returned %s", resp.Status)
+	}
+	var result struct {
+		Balance struct {
+			Spendable int64 `json:"spendable"`
+		} `json:"balance"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return 0, err
+	}
+	if result.Balance.Spendable < 0 {
+		return 0, fmt.Errorf("wallet overview returned negative spendable balance")
+	}
+	return result.Balance.Spendable, nil
+}
+
 type sendManyRequest struct {
 	Payments   []paymentRequest `json:"payments"`
 	Fee        string           `json:"fee,omitempty"`

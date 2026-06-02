@@ -33,6 +33,7 @@ func New(svc *service.Service, opts ...Options) *Server {
 	s.mux.HandleFunc("/status", s.handleStatus)
 	s.mux.HandleFunc("/workers", s.handleWorkers)
 	s.mux.HandleFunc("/blocks", s.handleBlocks)
+	s.mux.HandleFunc("/chain/blocks/recent", s.handleRecentChainBlocks)
 	s.mux.HandleFunc("/miner/", s.handleMiner)
 	s.mux.HandleFunc("/admin", s.handleAdmin)
 	s.mux.HandleFunc("/admin/login", s.handleAdminLogin)
@@ -99,6 +100,19 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, s.service.Snapshot())
+}
+
+func (s *Server) handleRecentChainBlocks(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	status := s.service.Snapshot()
+	writeJSON(w, http.StatusOK, map[string]any{
+		"updated_at": status.UpdatedAt,
+		"count":      len(status.Pool.RecentChainBlocks),
+		"entries":    status.Pool.RecentChainBlocks,
+	})
 }
 
 func (s *Server) handleMiner(w http.ResponseWriter, r *http.Request) {

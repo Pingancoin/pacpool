@@ -42,6 +42,7 @@ func main() {
 	payoutWindowEnd := flag.String("payoutwindowend", envString("PACPOOL_PAYOUT_WINDOW_END", "00:00"), "automatic payout window end in HH:MM; equal start/end means all day")
 	payoutTimezone := flag.String("payouttimezone", envString("PACPOOL_PAYOUT_TIMEZONE", "Asia/Shanghai"), "automatic payout window timezone")
 	payoutBatchLimit := flag.Int("payoutbatchlimit", envInt("PACPOOL_PAYOUT_BATCH_LIMIT", 50), "maximum miner payouts per automatic payout batch")
+	payoutStartHeight := flag.Uint("payoutstartheight", uint(envInt("PACPOOL_PAYOUT_START_HEIGHT", 0)), "ignore unpaid rounds below this block height for automatic payout accounting")
 	flag.Parse()
 
 	var payoutSender service.PayoutSender
@@ -73,6 +74,7 @@ func main() {
 		PayoutWindowEnd:   *payoutWindowEnd,
 		PayoutTimezone:    *payoutTimezone,
 		PayoutBatchLimit:  *payoutBatchLimit,
+		PayoutStartHeight: uint32(*payoutStartHeight),
 		PayoutSender:      payoutSender,
 	})
 	if err != nil {
@@ -108,7 +110,7 @@ func main() {
 		log.Printf("pacpool listening on http://%s", *listen)
 		log.Printf("pacpool upstream pacd=%s pacdata=%s miningaddr=%s sharedifficulty=%.4f vardiff=%t vardifftarget=%s datadir=%s", *pacdURL, *pacdataURL, *miningAddr, *shareDiff, *varDiff, *varDiffTarget, *dataDir)
 		if *autoPayout {
-			log.Printf("pacpool automatic payouts enabled wallet=%s interval=%s minatoms=%d fee=%s window=%s-%s timezone=%s batchlimit=%d", *payoutWalletURL, *payoutEvery, *payoutMin, *payoutFee, *payoutWindowStart, *payoutWindowEnd, *payoutTimezone, *payoutBatchLimit)
+			log.Printf("pacpool automatic payouts enabled wallet=%s interval=%s minatoms=%d fee=%s window=%s-%s timezone=%s batchlimit=%d startheight=%d", *payoutWalletURL, *payoutEvery, *payoutMin, *payoutFee, *payoutWindowStart, *payoutWindowEnd, *payoutTimezone, *payoutBatchLimit, *payoutStartHeight)
 		}
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			errCh <- err

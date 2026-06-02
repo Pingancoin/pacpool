@@ -23,6 +23,8 @@ type PACDSource interface {
 
 type PACDataSource interface {
 	Status(context.Context) (upstream.IndexStatus, error)
+	Blocks(context.Context, int, int) (upstream.BlockList, error)
+	Transaction(context.Context, string) (upstream.IndexedTx, error)
 }
 
 type Service struct {
@@ -39,6 +41,7 @@ type Service struct {
 	varMax            float64
 	dataDir           string
 	ledgerPath        string
+	chainBlockLogPath string
 	statePath         string
 	settingsPath      string
 	autoPayout        bool
@@ -48,24 +51,32 @@ type Service struct {
 	payoutWindowEnd   string
 	payoutLocation    *time.Location
 	payoutBatchLimit  int
+	payoutStartHeight uint32
 	now               func() time.Time
 
-	mu               sync.RWMutex
-	persistMu        sync.Mutex
-	payoutMu         sync.Mutex
-	state            State
-	lastTemplate     upstream.BlockTemplate
-	stratumConnected int
-	stratumJobs      int
-	workers          map[string]*WorkerState
-	onlineWorkers    map[string]int
-	nextRoundID      uint64
-	currentRound     RoundState
-	recentRounds     []RoundState
+	mu                     sync.RWMutex
+	persistMu              sync.Mutex
+	payoutMu               sync.Mutex
+	state                  State
+	lastTemplate           upstream.BlockTemplate
+	stratumConnected       int
+	stratumJobs            int
+	workers                map[string]*WorkerState
+	onlineWorkers          map[string]int
+	nextRoundID            uint64
+	currentRound           RoundState
+	recentRounds           []RoundState
+	recentChainBlocks      []ChainBlockRecord
+	chainBlocksByHash      map[string]ChainBlockRecord
+	loggedChainBlockHashes map[string]struct{}
 }
 
 type PayoutSender interface {
 	SendPayouts(context.Context, []PayoutEntry) (string, error)
+}
+
+type PayoutBalanceSource interface {
+	SpendableBalance(context.Context) (int64, error)
 }
 
 type State struct {
@@ -79,33 +90,34 @@ type State struct {
 }
 
 type PoolState struct {
-	Name             string          `json:"name"`
-	Version          string          `json:"version"`
-	FeePercent       float64         `json:"fee_percent"`
-	ShareDifficulty  float64         `json:"share_difficulty"`
-	VarDiffEnabled   bool            `json:"vardiff_enabled"`
-	VarDiffTargetSec int64           `json:"vardiff_target_sec"`
-	ConnectedMiners  int             `json:"connected_miners"`
-	ActiveJobs       int             `json:"active_jobs"`
-	ReadyForStratum  bool            `json:"ready_for_stratum"`
-	TemplateBackfill bool            `json:"template_backfill"`
-	MiningOpen       bool            `json:"mining_open"`
-	MiningStartTime  string          `json:"mining_start_time,omitempty"`
-	MiningStartsIn   int64           `json:"mining_starts_in_sec,omitempty"`
-	NotReadyReason   string          `json:"not_ready_reason,omitempty"`
-	MiningAddress    string          `json:"mining_address,omitempty"`
-	LedgerPath       string          `json:"ledger_path,omitempty"`
-	LastLedgerError  string          `json:"last_ledger_error,omitempty"`
-	Template         TemplateState   `json:"template"`
-	Shares           ShareState      `json:"shares"`
-	Workers          []WorkerState   `json:"workers,omitempty"`
-	CurrentRound     RoundState      `json:"current_round"`
-	RecentRounds     []RoundState    `json:"recent_rounds,omitempty"`
-	PendingPayouts   []PayoutEntry   `json:"pending_payouts,omitempty"`
-	Balances         []BalanceEntry  `json:"balances,omitempty"`
-	Payments         []PaymentRecord `json:"payments,omitempty"`
-	AutoPayout       AutoPayoutState `json:"auto_payout"`
-	Notes            []string        `json:"notes"`
+	Name              string             `json:"name"`
+	Version           string             `json:"version"`
+	FeePercent        float64            `json:"fee_percent"`
+	ShareDifficulty   float64            `json:"share_difficulty"`
+	VarDiffEnabled    bool               `json:"vardiff_enabled"`
+	VarDiffTargetSec  int64              `json:"vardiff_target_sec"`
+	ConnectedMiners   int                `json:"connected_miners"`
+	ActiveJobs        int                `json:"active_jobs"`
+	ReadyForStratum   bool               `json:"ready_for_stratum"`
+	TemplateBackfill  bool               `json:"template_backfill"`
+	MiningOpen        bool               `json:"mining_open"`
+	MiningStartTime   string             `json:"mining_start_time,omitempty"`
+	MiningStartsIn    int64              `json:"mining_starts_in_sec,omitempty"`
+	NotReadyReason    string             `json:"not_ready_reason,omitempty"`
+	MiningAddress     string             `json:"mining_address,omitempty"`
+	LedgerPath        string             `json:"ledger_path,omitempty"`
+	LastLedgerError   string             `json:"last_ledger_error,omitempty"`
+	Template          TemplateState      `json:"template"`
+	Shares            ShareState         `json:"shares"`
+	Workers           []WorkerState      `json:"workers,omitempty"`
+	CurrentRound      RoundState         `json:"current_round"`
+	RecentRounds      []RoundState       `json:"recent_rounds,omitempty"`
+	PendingPayouts    []PayoutEntry      `json:"pending_payouts,omitempty"`
+	Balances          []BalanceEntry     `json:"balances,omitempty"`
+	Payments          []PaymentRecord    `json:"payments,omitempty"`
+	AutoPayout        AutoPayoutState    `json:"auto_payout"`
+	RecentChainBlocks []ChainBlockRecord `json:"recent_chain_blocks,omitempty"`
+	Notes             []string           `json:"notes"`
 }
 
 type AutoPayoutState struct {
@@ -117,6 +129,7 @@ type AutoPayoutState struct {
 	WindowEnd        string    `json:"window_end"`
 	Timezone         string    `json:"timezone"`
 	BatchLimit       int       `json:"batch_limit"`
+	StartHeight      uint32    `json:"start_height,omitempty"`
 	LastAttemptAt    time.Time `json:"last_attempt_at,omitempty"`
 	LastSuccessAt    time.Time `json:"last_success_at,omitempty"`
 	LastTxID         string    `json:"last_txid,omitempty"`
@@ -223,6 +236,33 @@ type MinerStats struct {
 	LastPaymentTxID string          `json:"last_payment_txid,omitempty"`
 }
 
+type ChainBlockRecord struct {
+	ObservedAt           time.Time          `json:"observed_at"`
+	Height               uint32             `json:"height"`
+	Hash                 string             `json:"hash"`
+	PrevHash             string             `json:"prevhash"`
+	Time                 int64              `json:"time"`
+	Bits                 string             `json:"bits"`
+	Difficulty           string             `json:"difficulty,omitempty"`
+	Nonce                uint32             `json:"nonce"`
+	Subsidy              int64              `json:"subsidy,omitempty"`
+	CoinbaseTxID         string             `json:"coinbase_txid,omitempty"`
+	CoinbaseOutputs      []ChainBlockOutput `json:"coinbase_outputs,omitempty"`
+	MinerAddress         string             `json:"miner_address,omitempty"`
+	MinerReward          int64              `json:"miner_reward,omitempty"`
+	ProjectAddress       string             `json:"project_address,omitempty"`
+	ProjectReward        int64              `json:"project_reward,omitempty"`
+	OfficialPoolCoinbase bool               `json:"official_pool_coinbase"`
+	OfficialPoolRound    bool               `json:"official_pool_round"`
+	OfficialPoolWorker   string             `json:"official_pool_worker,omitempty"`
+}
+
+type ChainBlockOutput struct {
+	N       uint32 `json:"n"`
+	Value   int64  `json:"value"`
+	Address string `json:"address,omitempty"`
+}
+
 type Options struct {
 	Interval          time.Duration
 	FeeBPS            int
@@ -240,6 +280,7 @@ type Options struct {
 	PayoutWindowEnd   string
 	PayoutTimezone    string
 	PayoutBatchLimit  int
+	PayoutStartHeight uint32
 	PayoutSender      PayoutSender
 	Now               func() time.Time
 }
@@ -315,6 +356,7 @@ func New(pacd PACDSource, pacdata PACDataSource, opts Options) (*Service, error)
 				WindowEnd:        opts.PayoutWindowEnd,
 				Timezone:         opts.PayoutTimezone,
 				BatchLimit:       opts.PayoutBatchLimit,
+				StartHeight:      opts.PayoutStartHeight,
 			},
 			Notes: []string{
 				"Phase 0 control plane is live.",
@@ -327,30 +369,33 @@ func New(pacd PACDSource, pacdata PACDataSource, opts Options) (*Service, error)
 		Errors: make(map[string]string),
 	}
 	svc := &Service{
-		pacd:              pacd,
-		pacdata:           pacdata,
-		payouts:           opts.PayoutSender,
-		interval:          opts.Interval,
-		feeBPS:            opts.FeeBPS,
-		miningAddr:        opts.MiningAddr,
-		shareDiff:         opts.ShareDiff,
-		varDiff:           opts.VarDiff,
-		varTarget:         opts.VarDiffTarget,
-		varMin:            opts.VarDiffMin,
-		varMax:            opts.VarDiffMax,
-		dataDir:           opts.DataDir,
-		autoPayout:        opts.AutoPayout,
-		payoutMin:         opts.PayoutMin,
-		payoutEvery:       opts.PayoutEvery,
-		payoutWindowStart: opts.PayoutWindowStart,
-		payoutWindowEnd:   opts.PayoutWindowEnd,
-		payoutLocation:    payoutLocation,
-		payoutBatchLimit:  opts.PayoutBatchLimit,
-		state:             state,
-		workers:           make(map[string]*WorkerState),
-		onlineWorkers:     make(map[string]int),
-		now:               opts.Now,
-		nextRoundID:       1,
+		pacd:                   pacd,
+		pacdata:                pacdata,
+		payouts:                opts.PayoutSender,
+		interval:               opts.Interval,
+		feeBPS:                 opts.FeeBPS,
+		miningAddr:             opts.MiningAddr,
+		shareDiff:              opts.ShareDiff,
+		varDiff:                opts.VarDiff,
+		varTarget:              opts.VarDiffTarget,
+		varMin:                 opts.VarDiffMin,
+		varMax:                 opts.VarDiffMax,
+		dataDir:                opts.DataDir,
+		autoPayout:             opts.AutoPayout,
+		payoutMin:              opts.PayoutMin,
+		payoutEvery:            opts.PayoutEvery,
+		payoutWindowStart:      opts.PayoutWindowStart,
+		payoutWindowEnd:        opts.PayoutWindowEnd,
+		payoutLocation:         payoutLocation,
+		payoutBatchLimit:       opts.PayoutBatchLimit,
+		payoutStartHeight:      opts.PayoutStartHeight,
+		state:                  state,
+		workers:                make(map[string]*WorkerState),
+		onlineWorkers:          make(map[string]int),
+		chainBlocksByHash:      make(map[string]ChainBlockRecord),
+		loggedChainBlockHashes: make(map[string]struct{}),
+		now:                    opts.Now,
+		nextRoundID:            1,
 	}
 	if svc.now == nil {
 		svc.now = time.Now
@@ -399,8 +444,21 @@ func (s *Service) TryAutoPayout(ctx context.Context) (PaymentRecord, bool, error
 	if !s.inPayoutWindow(s.now()) {
 		return PaymentRecord{}, false, nil
 	}
-	payouts, total := s.pendingPayoutBatch()
+	budget := int64(-1)
+	if source, ok := s.payouts.(PayoutBalanceSource); ok {
+		spendable, err := source.SpendableBalance(ctx)
+		if err != nil {
+			err = fmt.Errorf("automatic payout wallet balance check failed: %w", err)
+			s.setAutoPayoutError(err)
+			return PaymentRecord{}, false, err
+		}
+		budget = spendable
+	}
+	payouts, total := s.pendingPayoutBatch(budget)
 	if len(payouts) == 0 || total < s.payoutMin {
+		if budget >= 0 {
+			s.setAutoPayoutAttempt(fmt.Sprintf("waiting for spendable wallet balance; available %d atoms", budget))
+		}
 		return PaymentRecord{}, false, nil
 	}
 	s.setAutoPayoutAttempt("")
@@ -425,7 +483,7 @@ func (s *Service) TryAutoPayout(ctx context.Context) (PaymentRecord, bool, error
 	return record, true, nil
 }
 
-func (s *Service) pendingPayoutBatch() ([]PayoutEntry, int64) {
+func (s *Service) pendingPayoutBatch(maxTotal int64) ([]PayoutEntry, int64) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	all := s.pendingPayoutsLocked()
@@ -433,6 +491,9 @@ func (s *Service) pendingPayoutBatch() ([]PayoutEntry, int64) {
 	var total int64
 	for _, payout := range all {
 		if payout.Amount < s.payoutMin {
+			continue
+		}
+		if maxTotal >= 0 && total+payout.Amount > maxTotal {
 			continue
 		}
 		payouts = append(payouts, payout)
@@ -448,6 +509,11 @@ func (s *Service) Refresh(ctx context.Context) {
 	mining, miningErr := s.pacd.MiningInfo(ctx)
 	network, networkErr := s.pacd.NetworkInfo(ctx)
 	index, indexErr := s.pacdata.Status(ctx)
+	var chainBlocks []ChainBlockRecord
+	var chainErr error
+	if indexErr == nil {
+		chainBlocks, chainErr = s.collectRecentChainBlocks(ctx, 100)
+	}
 	miningOpen := miningErr == nil && miningIsOpen(mining)
 	var template upstream.BlockTemplate
 	var templateErr error
@@ -485,6 +551,11 @@ func (s *Service) Refresh(ctx context.Context) {
 		s.state.PACData = index
 	} else {
 		s.state.Errors["pacdata"] = indexErr.Error()
+	}
+	if chainErr == nil {
+		s.applyRecentChainBlocksLocked(chainBlocks)
+	} else if indexErr == nil {
+		s.state.Errors["pacdata_recent_blocks"] = chainErr.Error()
 	}
 	if s.miningAddr != "" && miningOpen {
 		if templateErr == nil {
@@ -538,6 +609,7 @@ func (s *Service) Snapshot() State {
 	clone.Pool.PendingPayouts = append(make([]PayoutEntry, 0, len(s.state.Pool.PendingPayouts)), s.state.Pool.PendingPayouts...)
 	clone.Pool.Balances = append(make([]BalanceEntry, 0, len(s.state.Pool.Balances)), s.state.Pool.Balances...)
 	clone.Pool.Payments = clonePayments(s.state.Pool.Payments)
+	clone.Pool.RecentChainBlocks = cloneChainBlockRecords(s.state.Pool.RecentChainBlocks)
 	if len(s.state.Errors) > 0 {
 		clone.Errors = make(map[string]string, len(s.state.Errors))
 		for k, v := range s.state.Errors {
@@ -631,6 +703,9 @@ func (s *Service) MinerStats(address string) (MinerStats, bool) {
 	}
 	sort.Slice(stats.Workers, func(i, j int) bool { return stats.Workers[i].Name < stats.Workers[j].Name })
 	for _, round := range s.recentRounds {
+		if !s.payoutRoundEligible(round) {
+			continue
+		}
 		for _, payout := range round.Payouts {
 			if payoutAddressFromWorker(payout.Worker) != address {
 				continue
@@ -995,6 +1070,9 @@ func (s *Service) pendingPayoutsLocked() []PayoutEntry {
 		if !round.Solved || round.Paid {
 			continue
 		}
+		if !s.payoutRoundEligible(round) {
+			continue
+		}
 		for _, payout := range round.Payouts {
 			if payout.Paid {
 				continue
@@ -1032,6 +1110,9 @@ func (s *Service) balanceEntriesLocked() []BalanceEntry {
 	}
 	entries := make(map[string]*totals)
 	for _, round := range s.recentRounds {
+		if !s.payoutRoundEligible(round) {
+			continue
+		}
 		for _, payout := range round.Payouts {
 			address := payoutAddressFromWorker(payout.Worker)
 			if address == "" {
@@ -1110,6 +1191,9 @@ func (s *Service) executePayoutsLocked(txid string, note string, payouts []Payou
 		if !s.recentRounds[i].Solved || s.recentRounds[i].Paid {
 			continue
 		}
+		if !s.payoutRoundEligible(s.recentRounds[i]) {
+			continue
+		}
 		for j := range s.recentRounds[i].Payouts {
 			if s.recentRounds[i].Payouts[j].Paid {
 				continue
@@ -1145,6 +1229,10 @@ func (s *Service) executePayoutsLocked(txid string, note string, payouts []Payou
 		Reason:    "payout executed",
 	}, snapshot)
 	return record, true
+}
+
+func (s *Service) payoutRoundEligible(round RoundState) bool {
+	return s.payoutStartHeight == 0 || round.BlockHeight >= s.payoutStartHeight
 }
 
 func roundFullyPaid(round RoundState) bool {

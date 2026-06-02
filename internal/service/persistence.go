@@ -43,6 +43,7 @@ func (s *Service) initPersistence() error {
 		return err
 	}
 	s.ledgerPath = filepath.Join(s.dataDir, "share-events.jsonl")
+	s.chainBlockLogPath = filepath.Join(s.dataDir, "recent-chain-blocks.jsonl")
 	s.statePath = filepath.Join(s.dataDir, "share-state.json")
 	s.settingsPath = filepath.Join(s.dataDir, "runtime-settings.json")
 	s.state.Pool.LedgerPath = s.ledgerPath
