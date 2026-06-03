@@ -164,13 +164,13 @@ func TestSubscribeAuthorizeAndSubmit(t *testing.T) {
 	if branches, ok := params[4].([]any); !ok || len(branches) != 0 {
 		t.Fatalf("notify branches = %#v, want empty array", params[4])
 	}
-	if got, want := params[5].(string), "07000000"; got != want {
+	if got, want := params[5].(string), hex.EncodeToString(header[headerVersionOffset:headerVersionOffset+4]); got != want {
 		t.Fatalf("notify version = %q, want %q", got, want)
 	}
 	if got, want := params[6].(string), mustReverseHexBytes(t, hex.EncodeToString(header[headerBitsOffset:headerBitsOffset+4])); got != want {
 		t.Fatalf("notify bits = %q, want %q", got, want)
 	}
-	nonce := solveNonceWithVersionAndExtra(t, template.HeaderHex, template.Bits, ntime, dr5HeaderVersion, submitExtraNonce)
+	nonce := solveNonceWithDR5Extra(t, template.HeaderHex, template.Bits, ntime, submitExtraNonce)
 
 	writeLine(t, conn, fmt.Sprintf(`{"id":3,"method":"mining.submit","params":["worker","%s","%s","%s","%s"]}`, jobID, submitExtraNonce, ntime, nonce))
 	var submit map[string]any
@@ -257,7 +257,7 @@ func TestSubmitAcceptsShareWithoutBlockSolve(t *testing.T) {
 	if got, want := params[2].(string), hex.EncodeToString(header[36:headerExtraDataOffset]); got != want {
 		t.Fatalf("notify partial header = %q, want %q", got, want)
 	}
-	nonce := solveShareNonceWithVersionAndExtra(t, template.HeaderHex, template.Bits, ntime, provider.shareDiff, dr5HeaderVersion, submitExtraNonce)
+	nonce := solveShareNonceWithDR5Extra(t, template.HeaderHex, template.Bits, ntime, provider.shareDiff, submitExtraNonce)
 
 	writeLine(t, conn, fmt.Sprintf(`{"id":3,"method":"mining.submit","params":["worker.share","%s","%s","%s","%s"]}`, jobID, submitExtraNonce, ntime, nonce))
 	var submit map[string]any
@@ -527,7 +527,7 @@ func TestSuggestedDifficultySurvivesAcceptedShare(t *testing.T) {
 	params := notify["params"].([]any)
 	jobID := params[0].(string)
 	ntime := params[7].(string)
-	nonce := solveShareNonceWithVersionAndExtra(t, template.HeaderHex, template.Bits, ntime, 1, dr5HeaderVersion, submitExtraNonce)
+	nonce := solveShareNonceWithDR5Extra(t, template.HeaderHex, template.Bits, ntime, 1, submitExtraNonce)
 
 	writeLine(t, conn, fmt.Sprintf(`{"id":4,"method":"mining.submit","params":["worker.fixed","%s","%s","%s","%s"]}`, jobID, submitExtraNonce, ntime, nonce))
 	var submit map[string]any
@@ -610,10 +610,14 @@ func solveNonce(t *testing.T, headerHex string, bitsHex string, ntime string) st
 }
 
 func solveNonceWithVersion(t *testing.T, headerHex string, bitsHex string, ntime string, version uint32) string {
-	return solveNonceWithVersionAndExtra(t, headerHex, bitsHex, ntime, version, "")
+	return solveNonceWithOptions(t, headerHex, bitsHex, ntime, version, "", false)
 }
 
-func solveNonceWithVersionAndExtra(t *testing.T, headerHex string, bitsHex string, ntime string, version uint32, extraDataHex string) string {
+func solveNonceWithDR5Extra(t *testing.T, headerHex string, bitsHex string, ntime string, extraDataHex string) string {
+	return solveNonceWithOptions(t, headerHex, bitsHex, ntime, 0, extraDataHex, true)
+}
+
+func solveNonceWithOptions(t *testing.T, headerHex string, bitsHex string, ntime string, version uint32, extraDataHex string, dr5Endian bool) string {
 	t.Helper()
 	header, err := hex.DecodeString(headerHex)
 	if err != nil {
@@ -629,7 +633,7 @@ func solveNonceWithVersionAndExtra(t *testing.T, headerHex string, bitsHex strin
 	if len(ntimeBytes) != 4 {
 		t.Fatalf("ntime length = %d, want 4", len(ntimeBytes))
 	}
-	if version > 0 {
+	if dr5Endian {
 		reverseBytes(ntimeBytes)
 	}
 	if extraDataHex != "" {
@@ -651,7 +655,7 @@ func solveNonceWithVersionAndExtra(t *testing.T, headerHex string, bitsHex strin
 		hash := blake256.Sum256(header)
 		if hashToBig(hash[:]).Cmp(target) <= 0 {
 			nonce := append([]byte(nil), header[headerNonceOffset:headerNonceOffset+4]...)
-			if version > 0 {
+			if dr5Endian {
 				reverseBytes(nonce)
 			}
 			return hex.EncodeToString(nonce)
@@ -664,10 +668,14 @@ func solveShareNonce(t *testing.T, headerHex string, bitsHex string, ntime strin
 }
 
 func solveShareNonceWithVersion(t *testing.T, headerHex string, bitsHex string, ntime string, shareDiff float64, version uint32) string {
-	return solveShareNonceWithVersionAndExtra(t, headerHex, bitsHex, ntime, shareDiff, version, "")
+	return solveShareNonceWithOptions(t, headerHex, bitsHex, ntime, shareDiff, version, "", false)
 }
 
-func solveShareNonceWithVersionAndExtra(t *testing.T, headerHex string, bitsHex string, ntime string, shareDiff float64, version uint32, extraDataHex string) string {
+func solveShareNonceWithDR5Extra(t *testing.T, headerHex string, bitsHex string, ntime string, shareDiff float64, extraDataHex string) string {
+	return solveShareNonceWithOptions(t, headerHex, bitsHex, ntime, shareDiff, 0, extraDataHex, true)
+}
+
+func solveShareNonceWithOptions(t *testing.T, headerHex string, bitsHex string, ntime string, shareDiff float64, version uint32, extraDataHex string, dr5Endian bool) string {
 	t.Helper()
 	header, err := hex.DecodeString(headerHex)
 	if err != nil {
@@ -683,7 +691,7 @@ func solveShareNonceWithVersionAndExtra(t *testing.T, headerHex string, bitsHex 
 	if len(ntimeBytes) != 4 {
 		t.Fatalf("ntime length = %d, want 4", len(ntimeBytes))
 	}
-	if version > 0 {
+	if dr5Endian {
 		reverseBytes(ntimeBytes)
 	}
 	if extraDataHex != "" {
@@ -707,7 +715,7 @@ func solveShareNonceWithVersionAndExtra(t *testing.T, headerHex string, bitsHex 
 		value := hashToBig(hash[:])
 		if value.Cmp(shareTarget) <= 0 && value.Cmp(networkTarget) > 0 {
 			nonce := append([]byte(nil), header[headerNonceOffset:headerNonceOffset+4]...)
-			if version > 0 {
+			if dr5Endian {
 				reverseBytes(nonce)
 			}
 			return hex.EncodeToString(nonce)
