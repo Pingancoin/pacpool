@@ -53,7 +53,7 @@ type Job struct {
 const (
 	extraNonce1Size        = 4
 	defaultExtraNonce2Size = 8
-	dr5ExtraNonce2Size     = 4
+	dr5ExtraNonce2Size     = 8
 	dr5HeaderVersion       = 7
 	minJobRefresh          = 30 * time.Second
 
@@ -445,7 +445,7 @@ func (sess *session) handleSubmit(ctx context.Context, req request) error {
 	if sess.dr5 {
 		binary.LittleEndian.PutUint32(headerBytes[headerVersionOffset:headerVersionOffset+4], dr5HeaderVersion)
 	}
-	reverseSubmitWords := !sess.dr5
+	reverseSubmitWords := true
 	ntimeBytes, err := decodeUint32Hex(ntimeHex, reverseSubmitWords)
 	if err != nil {
 		sess.server.svc.RecordShare(worker, false, false, "invalid ntime")
@@ -558,15 +558,30 @@ func (sess *session) sendNotify(job *Job, clean bool) error {
 	}
 	if sess.dr5 {
 		binary.LittleEndian.PutUint32(headerBytes[headerVersionOffset:headerVersionOffset+4], dr5HeaderVersion)
+		prevBlock, err := reversePrevBlockWords(hex.EncodeToString(headerBytes[4:36]))
+		if err != nil {
+			return err
+		}
+		bits, err := reverseHexBytes(hex.EncodeToString(headerBytes[headerBitsOffset : headerBitsOffset+4]))
+		if err != nil {
+			return err
+		}
+		ntime, err := reverseHexBytes(hex.EncodeToString(headerBytes[headerTimestampOffset : headerTimestampOffset+4]))
+		if err != nil {
+			return err
+		}
+		// Match the pre-v2 dcrpool DR3/DR5 wire format. Antminer DR5 firmware
+		// expects the Decred-style 9-parameter notify and returns the padded
+		// 12-byte extranonce blob in mining.submit.
 		return sess.sendNotification("mining.notify", []any{
 			job.ID,
-			hex.EncodeToString(headerBytes[4:36]),
+			prevBlock,
 			hex.EncodeToString(headerBytes[36:headerExtraDataOffset]),
-			hex.EncodeToString(headerBytes[headerExtraDataOffset+extraNonce1Size+dr5ExtraNonce2Size : headerLength]),
+			hex.EncodeToString(headerBytes[176:headerLength]),
 			[]string{},
 			hex.EncodeToString(headerBytes[0:4]),
-			hex.EncodeToString(headerBytes[headerBitsOffset : headerBitsOffset+4]),
-			hex.EncodeToString(headerBytes[headerTimestampOffset : headerTimestampOffset+4]),
+			bits,
+			ntime,
 			clean,
 		})
 	}
@@ -621,7 +636,7 @@ func (sess *session) extraNonce2Size() int {
 
 func (sess *session) subscribeExtraNonce1() string {
 	if sess.dr5 {
-		return sess.extraNonce1
+		return strings.Repeat("0", dr5ExtraNonce2Size*2) + sess.extraNonce1
 	}
 	return strings.Repeat("0", defaultExtraNonce2Size*2) + sess.extraNonce1
 }

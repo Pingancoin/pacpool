@@ -122,8 +122,9 @@ func TestSubscribeAuthorizeAndSubmit(t *testing.T) {
 		t.Fatalf("unexpected subscribe response: %+v", subscribe)
 	}
 	subscribeResult := subscribe["result"].([]any)
-	if got := len(subscribeResult[1].(string)); got != extraNonce1Size*2 {
-		t.Fatalf("subscribe extranonce1 hex length = %d, want %d", got, extraNonce1Size*2)
+	submitExtraNonce := subscribeResult[1].(string)
+	if got, want := len(submitExtraNonce), (dr5ExtraNonce2Size+extraNonce1Size)*2; got != want {
+		t.Fatalf("subscribe extranonce1 hex length = %d, want %d", got, want)
 	}
 	if got := int(subscribeResult[2].(float64)); got != dr5ExtraNonce2Size {
 		t.Fatalf("subscribe extranonce2 size = %d, want %d", got, dr5ExtraNonce2Size)
@@ -151,13 +152,13 @@ func TestSubscribeAuthorizeAndSubmit(t *testing.T) {
 	if got := len(params); got != 9 {
 		t.Fatalf("notify param count = %d, want 9", got)
 	}
-	if got, want := params[1].(string), hex.EncodeToString(header[4:36]); got != want {
+	if got, want := params[1].(string), mustReversePrevBlockWords(t, hex.EncodeToString(header[4:36])); got != want {
 		t.Fatalf("notify prevblock = %q, want %q", got, want)
 	}
 	if got, want := params[2].(string), hex.EncodeToString(header[36:headerExtraDataOffset]); got != want {
 		t.Fatalf("notify gen tx1 = %q, want %q", got, want)
 	}
-	if got, want := params[3].(string), hex.EncodeToString(header[headerExtraDataOffset+extraNonce1Size+dr5ExtraNonce2Size:headerLength]); got != want {
+	if got, want := params[3].(string), hex.EncodeToString(header[176:headerLength]); got != want {
 		t.Fatalf("notify gen tx2 = %q, want %q", got, want)
 	}
 	if branches, ok := params[4].([]any); !ok || len(branches) != 0 {
@@ -166,12 +167,12 @@ func TestSubscribeAuthorizeAndSubmit(t *testing.T) {
 	if got, want := params[5].(string), "07000000"; got != want {
 		t.Fatalf("notify version = %q, want %q", got, want)
 	}
-	if got, want := params[6].(string), hex.EncodeToString(header[headerBitsOffset:headerBitsOffset+4]); got != want {
+	if got, want := params[6].(string), mustReverseHexBytes(t, hex.EncodeToString(header[headerBitsOffset:headerBitsOffset+4])); got != want {
 		t.Fatalf("notify bits = %q, want %q", got, want)
 	}
-	nonce := solveNonceWithVersion(t, template.HeaderHex, template.Bits, ntime, dr5HeaderVersion)
+	nonce := solveNonceWithVersionAndExtra(t, template.HeaderHex, template.Bits, ntime, dr5HeaderVersion, submitExtraNonce)
 
-	writeLine(t, conn, fmt.Sprintf(`{"id":3,"method":"mining.submit","params":["worker","%s","","%s","%s"]}`, jobID, ntime, nonce))
+	writeLine(t, conn, fmt.Sprintf(`{"id":3,"method":"mining.submit","params":["worker","%s","%s","%s","%s"]}`, jobID, submitExtraNonce, ntime, nonce))
 	var submit map[string]any
 	readJSONLine(t, reader, &submit)
 	if submit["result"] != true {
@@ -241,6 +242,7 @@ func TestSubmitAcceptsShareWithoutBlockSolve(t *testing.T) {
 	writeLine(t, conn, `{"id":1,"method":"mining.subscribe","params":["cgminer/4.9.0","00000001"]}`)
 	var subscribe map[string]any
 	readJSONLine(t, reader, &subscribe)
+	submitExtraNonce := subscribe["result"].([]any)[1].(string)
 	writeLine(t, conn, `{"id":2,"method":"mining.authorize","params":["worker.share","x"]}`)
 	var authorize map[string]any
 	readJSONLine(t, reader, &authorize)
@@ -255,9 +257,9 @@ func TestSubmitAcceptsShareWithoutBlockSolve(t *testing.T) {
 	if got, want := params[2].(string), hex.EncodeToString(header[36:headerExtraDataOffset]); got != want {
 		t.Fatalf("notify partial header = %q, want %q", got, want)
 	}
-	nonce := solveShareNonceWithVersion(t, template.HeaderHex, template.Bits, ntime, provider.shareDiff, dr5HeaderVersion)
+	nonce := solveShareNonceWithVersionAndExtra(t, template.HeaderHex, template.Bits, ntime, provider.shareDiff, dr5HeaderVersion, submitExtraNonce)
 
-	writeLine(t, conn, fmt.Sprintf(`{"id":3,"method":"mining.submit","params":["worker.share","%s","","%s","%s"]}`, jobID, ntime, nonce))
+	writeLine(t, conn, fmt.Sprintf(`{"id":3,"method":"mining.submit","params":["worker.share","%s","%s","%s","%s"]}`, jobID, submitExtraNonce, ntime, nonce))
 	var submit map[string]any
 	readJSONLine(t, reader, &submit)
 	if submit["result"] != true {
@@ -504,6 +506,7 @@ func TestSuggestedDifficultySurvivesAcceptedShare(t *testing.T) {
 	writeLine(t, conn, `{"id":1,"method":"mining.subscribe","params":["cgminer/4.9.0","00000001"]}`)
 	var subscribe map[string]any
 	readJSONLine(t, reader, &subscribe)
+	submitExtraNonce := subscribe["result"].([]any)[1].(string)
 
 	writeLine(t, conn, `{"id":2,"method":"mining.suggest_difficulty","params":[1]}`)
 	var suggest map[string]any
@@ -524,9 +527,9 @@ func TestSuggestedDifficultySurvivesAcceptedShare(t *testing.T) {
 	params := notify["params"].([]any)
 	jobID := params[0].(string)
 	ntime := params[7].(string)
-	nonce := solveShareNonceWithVersion(t, template.HeaderHex, template.Bits, ntime, 1, dr5HeaderVersion)
+	nonce := solveShareNonceWithVersionAndExtra(t, template.HeaderHex, template.Bits, ntime, 1, dr5HeaderVersion, submitExtraNonce)
 
-	writeLine(t, conn, fmt.Sprintf(`{"id":4,"method":"mining.submit","params":["worker.fixed","%s","","%s","%s"]}`, jobID, ntime, nonce))
+	writeLine(t, conn, fmt.Sprintf(`{"id":4,"method":"mining.submit","params":["worker.fixed","%s","%s","%s","%s"]}`, jobID, submitExtraNonce, ntime, nonce))
 	var submit map[string]any
 	readJSONLine(t, reader, &submit)
 	if submit["result"] != true {
@@ -607,6 +610,10 @@ func solveNonce(t *testing.T, headerHex string, bitsHex string, ntime string) st
 }
 
 func solveNonceWithVersion(t *testing.T, headerHex string, bitsHex string, ntime string, version uint32) string {
+	return solveNonceWithVersionAndExtra(t, headerHex, bitsHex, ntime, version, "")
+}
+
+func solveNonceWithVersionAndExtra(t *testing.T, headerHex string, bitsHex string, ntime string, version uint32, extraDataHex string) string {
 	t.Helper()
 	header, err := hex.DecodeString(headerHex)
 	if err != nil {
@@ -621,6 +628,16 @@ func solveNonceWithVersion(t *testing.T, headerHex string, bitsHex string, ntime
 	}
 	if len(ntimeBytes) != 4 {
 		t.Fatalf("ntime length = %d, want 4", len(ntimeBytes))
+	}
+	if version > 0 {
+		reverseBytes(ntimeBytes)
+	}
+	if extraDataHex != "" {
+		extraData, err := hex.DecodeString(extraDataHex)
+		if err != nil {
+			t.Fatal(err)
+		}
+		copy(header[headerExtraDataOffset:], extraData)
 	}
 	bitsVal, err := strconv.ParseUint(bitsHex, 16, 32)
 	if err != nil {
@@ -633,7 +650,11 @@ func solveNonceWithVersion(t *testing.T, headerHex string, bitsHex string, ntime
 		binary.LittleEndian.PutUint32(header[headerNonceOffset:headerNonceOffset+4], nonce)
 		hash := blake256.Sum256(header)
 		if hashToBig(hash[:]).Cmp(target) <= 0 {
-			return hex.EncodeToString(header[headerNonceOffset : headerNonceOffset+4])
+			nonce := append([]byte(nil), header[headerNonceOffset:headerNonceOffset+4]...)
+			if version > 0 {
+				reverseBytes(nonce)
+			}
+			return hex.EncodeToString(nonce)
 		}
 	}
 }
@@ -643,6 +664,10 @@ func solveShareNonce(t *testing.T, headerHex string, bitsHex string, ntime strin
 }
 
 func solveShareNonceWithVersion(t *testing.T, headerHex string, bitsHex string, ntime string, shareDiff float64, version uint32) string {
+	return solveShareNonceWithVersionAndExtra(t, headerHex, bitsHex, ntime, shareDiff, version, "")
+}
+
+func solveShareNonceWithVersionAndExtra(t *testing.T, headerHex string, bitsHex string, ntime string, shareDiff float64, version uint32, extraDataHex string) string {
 	t.Helper()
 	header, err := hex.DecodeString(headerHex)
 	if err != nil {
@@ -657,6 +682,16 @@ func solveShareNonceWithVersion(t *testing.T, headerHex string, bitsHex string, 
 	}
 	if len(ntimeBytes) != 4 {
 		t.Fatalf("ntime length = %d, want 4", len(ntimeBytes))
+	}
+	if version > 0 {
+		reverseBytes(ntimeBytes)
+	}
+	if extraDataHex != "" {
+		extraData, err := hex.DecodeString(extraDataHex)
+		if err != nil {
+			t.Fatal(err)
+		}
+		copy(header[headerExtraDataOffset:], extraData)
 	}
 	bitsVal, err := strconv.ParseUint(bitsHex, 16, 32)
 	if err != nil {
@@ -671,7 +706,35 @@ func solveShareNonceWithVersion(t *testing.T, headerHex string, bitsHex string, 
 		hash := blake256.Sum256(header)
 		value := hashToBig(hash[:])
 		if value.Cmp(shareTarget) <= 0 && value.Cmp(networkTarget) > 0 {
-			return hex.EncodeToString(header[headerNonceOffset : headerNonceOffset+4])
+			nonce := append([]byte(nil), header[headerNonceOffset:headerNonceOffset+4]...)
+			if version > 0 {
+				reverseBytes(nonce)
+			}
+			return hex.EncodeToString(nonce)
 		}
+	}
+}
+
+func mustReverseHexBytes(t *testing.T, value string) string {
+	t.Helper()
+	reversed, err := reverseHexBytes(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return reversed
+}
+
+func mustReversePrevBlockWords(t *testing.T, value string) string {
+	t.Helper()
+	reversed, err := reversePrevBlockWords(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return reversed
+}
+
+func reverseBytes(value []byte) {
+	for i, j := 0, len(value)-1; i < j; i, j = i+1, j-1 {
+		value[i], value[j] = value[j], value[i]
 	}
 }
