@@ -163,13 +163,13 @@ func TestSubscribeAuthorizeAndSubmit(t *testing.T) {
 	if branches, ok := params[4].([]any); !ok || len(branches) != 0 {
 		t.Fatalf("notify branches = %#v, want empty array", params[4])
 	}
-	if got, want := params[5].(string), hex.EncodeToString(header[0:4]); got != want {
+	if got, want := params[5].(string), "07000000"; got != want {
 		t.Fatalf("notify version = %q, want %q", got, want)
 	}
 	if got, want := params[6].(string), hex.EncodeToString(header[headerBitsOffset:headerBitsOffset+4]); got != want {
 		t.Fatalf("notify bits = %q, want %q", got, want)
 	}
-	nonce := solveNonce(t, template.HeaderHex, template.Bits, ntime)
+	nonce := solveNonceWithVersion(t, template.HeaderHex, template.Bits, ntime, dr5HeaderVersion)
 
 	writeLine(t, conn, fmt.Sprintf(`{"id":3,"method":"mining.submit","params":["worker","%s","","%s","%s"]}`, jobID, ntime, nonce))
 	var submit map[string]any
@@ -255,7 +255,7 @@ func TestSubmitAcceptsShareWithoutBlockSolve(t *testing.T) {
 	if got, want := params[2].(string), hex.EncodeToString(header[36:180]); got != want {
 		t.Fatalf("notify partial header = %q, want %q", got, want)
 	}
-	nonce := solveShareNonce(t, template.HeaderHex, template.Bits, ntime, provider.shareDiff)
+	nonce := solveShareNonceWithVersion(t, template.HeaderHex, template.Bits, ntime, provider.shareDiff, dr5HeaderVersion)
 
 	writeLine(t, conn, fmt.Sprintf(`{"id":3,"method":"mining.submit","params":["worker.share","%s","","%s","%s"]}`, jobID, ntime, nonce))
 	var submit map[string]any
@@ -524,7 +524,7 @@ func TestSuggestedDifficultySurvivesAcceptedShare(t *testing.T) {
 	params := notify["params"].([]any)
 	jobID := params[0].(string)
 	ntime := params[7].(string)
-	nonce := solveShareNonce(t, template.HeaderHex, template.Bits, ntime, 1)
+	nonce := solveShareNonceWithVersion(t, template.HeaderHex, template.Bits, ntime, 1, dr5HeaderVersion)
 
 	writeLine(t, conn, fmt.Sprintf(`{"id":4,"method":"mining.submit","params":["worker.fixed","%s","","%s","%s"]}`, jobID, ntime, nonce))
 	var submit map[string]any
@@ -603,10 +603,17 @@ func withEasyDiffOneTarget(t *testing.T) {
 }
 
 func solveNonce(t *testing.T, headerHex string, bitsHex string, ntime string) string {
+	return solveNonceWithVersion(t, headerHex, bitsHex, ntime, 0)
+}
+
+func solveNonceWithVersion(t *testing.T, headerHex string, bitsHex string, ntime string, version uint32) string {
 	t.Helper()
 	header, err := hex.DecodeString(headerHex)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if version > 0 {
+		binary.LittleEndian.PutUint32(header[headerVersionOffset:headerVersionOffset+4], version)
 	}
 	ntimeBytes, err := hex.DecodeString(ntime)
 	if err != nil {
@@ -632,10 +639,17 @@ func solveNonce(t *testing.T, headerHex string, bitsHex string, ntime string) st
 }
 
 func solveShareNonce(t *testing.T, headerHex string, bitsHex string, ntime string, shareDiff float64) string {
+	return solveShareNonceWithVersion(t, headerHex, bitsHex, ntime, shareDiff, 0)
+}
+
+func solveShareNonceWithVersion(t *testing.T, headerHex string, bitsHex string, ntime string, shareDiff float64, version uint32) string {
 	t.Helper()
 	header, err := hex.DecodeString(headerHex)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if version > 0 {
+		binary.LittleEndian.PutUint32(header[headerVersionOffset:headerVersionOffset+4], version)
 	}
 	ntimeBytes, err := hex.DecodeString(ntime)
 	if err != nil {

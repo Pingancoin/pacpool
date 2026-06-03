@@ -54,8 +54,10 @@ const (
 	extraNonce1Size        = 4
 	defaultExtraNonce2Size = 8
 	dr5ExtraNonce2Size     = 4
+	dr5HeaderVersion       = 7
 	minJobRefresh          = 30 * time.Second
 
+	headerVersionOffset   = 0
 	headerBitsOffset      = 116
 	headerHeightOffset    = 128
 	headerTimestampOffset = 136
@@ -440,6 +442,9 @@ func (sess *session) handleSubmit(ctx context.Context, req request) error {
 		sess.server.svc.RecordShare(worker, false, false, "short template")
 		return sess.sendResponse(response{ID: req.ID, Result: false, Error: []any{20, "short template", nil}})
 	}
+	if sess.dr5 {
+		binary.LittleEndian.PutUint32(headerBytes[headerVersionOffset:headerVersionOffset+4], dr5HeaderVersion)
+	}
 	reverseSubmitWords := !sess.dr5
 	ntimeBytes, err := decodeUint32Hex(ntimeHex, reverseSubmitWords)
 	if err != nil {
@@ -552,6 +557,7 @@ func (sess *session) sendNotify(job *Job, clean bool) error {
 		})
 	}
 	if sess.dr5 {
+		binary.LittleEndian.PutUint32(headerBytes[headerVersionOffset:headerVersionOffset+4], dr5HeaderVersion)
 		return sess.sendNotification("mining.notify", []any{
 			job.ID,
 			hex.EncodeToString(headerBytes[4:36]),
