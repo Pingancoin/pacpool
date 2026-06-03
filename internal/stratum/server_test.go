@@ -154,10 +154,10 @@ func TestSubscribeAuthorizeAndSubmit(t *testing.T) {
 	if got, want := params[1].(string), hex.EncodeToString(header[4:36]); got != want {
 		t.Fatalf("notify prevblock = %q, want %q", got, want)
 	}
-	if got, want := params[2].(string), hex.EncodeToString(header[36:180]); got != want {
+	if got, want := params[2].(string), hex.EncodeToString(header[36:headerExtraDataOffset]); got != want {
 		t.Fatalf("notify gen tx1 = %q, want %q", got, want)
 	}
-	if got, want := params[3].(string), ""; got != want {
+	if got, want := params[3].(string), hex.EncodeToString(header[headerExtraDataOffset+extraNonce1Size+dr5ExtraNonce2Size:headerLength]); got != want {
 		t.Fatalf("notify gen tx2 = %q, want %q", got, want)
 	}
 	if branches, ok := params[4].([]any); !ok || len(branches) != 0 {
@@ -252,7 +252,7 @@ func TestSubmitAcceptsShareWithoutBlockSolve(t *testing.T) {
 	params := notify["params"].([]any)
 	jobID := params[0].(string)
 	ntime := params[7].(string)
-	if got, want := params[2].(string), hex.EncodeToString(header[36:180]); got != want {
+	if got, want := params[2].(string), hex.EncodeToString(header[36:headerExtraDataOffset]); got != want {
 		t.Fatalf("notify partial header = %q, want %q", got, want)
 	}
 	nonce := solveShareNonceWithVersion(t, template.HeaderHex, template.Bits, ntime, provider.shareDiff, dr5HeaderVersion)

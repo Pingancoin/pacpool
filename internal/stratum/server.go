@@ -561,8 +561,8 @@ func (sess *session) sendNotify(job *Job, clean bool) error {
 		return sess.sendNotification("mining.notify", []any{
 			job.ID,
 			hex.EncodeToString(headerBytes[4:36]),
-			hex.EncodeToString(headerBytes[36:180]),
-			"",
+			hex.EncodeToString(headerBytes[36:headerExtraDataOffset]),
+			hex.EncodeToString(headerBytes[headerExtraDataOffset+extraNonce1Size+dr5ExtraNonce2Size : headerLength]),
 			[]string{},
 			hex.EncodeToString(headerBytes[0:4]),
 			hex.EncodeToString(headerBytes[headerBitsOffset : headerBitsOffset+4]),
