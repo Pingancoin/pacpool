@@ -122,11 +122,11 @@ func TestSubscribeAuthorizeAndSubmit(t *testing.T) {
 		t.Fatalf("unexpected subscribe response: %+v", subscribe)
 	}
 	subscribeResult := subscribe["result"].([]any)
-	if got := len(subscribeResult[1].(string)); got != dr5ExtraNonceSize*2 {
-		t.Fatalf("subscribe extranonce1 hex length = %d, want %d", got, dr5ExtraNonceSize*2)
+	if got := len(subscribeResult[1].(string)); got != extraNonce1Size*2 {
+		t.Fatalf("subscribe extranonce1 hex length = %d, want %d", got, extraNonce1Size*2)
 	}
-	if got := int(subscribeResult[2].(float64)); got != extraNonce2Size {
-		t.Fatalf("subscribe extranonce2 size = %d, want %d", got, extraNonce2Size)
+	if got := int(subscribeResult[2].(float64)); got != dr5ExtraNonce2Size {
+		t.Fatalf("subscribe extranonce2 size = %d, want %d", got, dr5ExtraNonce2Size)
 	}
 
 	writeLine(t, conn, `{"id":2,"method":"mining.authorize","params":["worker","x"]}`)
@@ -151,18 +151,14 @@ func TestSubscribeAuthorizeAndSubmit(t *testing.T) {
 	if got := len(params); got != 9 {
 		t.Fatalf("notify param count = %d, want 9", got)
 	}
-	wantPrev, err := reversePrevBlockWords(hex.EncodeToString(header[4:36]))
-	if err != nil {
-		t.Fatal(err)
+	if got, want := params[1].(string), hex.EncodeToString(header[4:36]); got != want {
+		t.Fatalf("notify prevblock = %q, want %q", got, want)
 	}
-	if got := params[1].(string); got != wantPrev {
-		t.Fatalf("notify prevblock = %q, want %q", got, wantPrev)
+	if got, want := params[2].(string), hex.EncodeToString(header[36:180]); got != want {
+		t.Fatalf("notify gen tx1 = %q, want %q", got, want)
 	}
-	if got, want := params[2].(string), hex.EncodeToString(header[36:144]); got != want {
-		t.Fatalf("notify partial header = %q, want %q", got, want)
-	}
-	if got, want := params[3].(string), hex.EncodeToString(header[176:180]); got != want {
-		t.Fatalf("notify suffix = %q, want %q", got, want)
+	if got, want := params[3].(string), ""; got != want {
+		t.Fatalf("notify gen tx2 = %q, want %q", got, want)
 	}
 	if branches, ok := params[4].([]any); !ok || len(branches) != 0 {
 		t.Fatalf("notify branches = %#v, want empty array", params[4])
@@ -170,12 +166,8 @@ func TestSubscribeAuthorizeAndSubmit(t *testing.T) {
 	if got, want := params[5].(string), hex.EncodeToString(header[0:4]); got != want {
 		t.Fatalf("notify version = %q, want %q", got, want)
 	}
-	wantBits, err := reverseHexBytes(hex.EncodeToString(header[headerBitsOffset : headerBitsOffset+4]))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := params[6].(string); got != wantBits {
-		t.Fatalf("notify bits = %q, want %q", got, wantBits)
+	if got, want := params[6].(string), hex.EncodeToString(header[headerBitsOffset:headerBitsOffset+4]); got != want {
+		t.Fatalf("notify bits = %q, want %q", got, want)
 	}
 	nonce := solveNonce(t, template.HeaderHex, template.Bits, ntime)
 
@@ -260,7 +252,7 @@ func TestSubmitAcceptsShareWithoutBlockSolve(t *testing.T) {
 	params := notify["params"].([]any)
 	jobID := params[0].(string)
 	ntime := params[7].(string)
-	if got, want := params[2].(string), hex.EncodeToString(header[36:144]); got != want {
+	if got, want := params[2].(string), hex.EncodeToString(header[36:180]); got != want {
 		t.Fatalf("notify partial header = %q, want %q", got, want)
 	}
 	nonce := solveShareNonce(t, template.HeaderHex, template.Bits, ntime, provider.shareDiff)
@@ -616,11 +608,7 @@ func solveNonce(t *testing.T, headerHex string, bitsHex string, ntime string) st
 	if err != nil {
 		t.Fatal(err)
 	}
-	ntimeLE, err := reverseHexBytes(ntime)
-	if err != nil {
-		t.Fatal(err)
-	}
-	ntimeBytes, err := hex.DecodeString(ntimeLE)
+	ntimeBytes, err := hex.DecodeString(ntime)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -638,11 +626,7 @@ func solveNonce(t *testing.T, headerHex string, bitsHex string, ntime string) st
 		binary.LittleEndian.PutUint32(header[headerNonceOffset:headerNonceOffset+4], nonce)
 		hash := blake256.Sum256(header)
 		if hashToBig(hash[:]).Cmp(target) <= 0 {
-			nonceBE, err := reverseHexBytes(hex.EncodeToString(header[headerNonceOffset : headerNonceOffset+4]))
-			if err != nil {
-				t.Fatal(err)
-			}
-			return nonceBE
+			return hex.EncodeToString(header[headerNonceOffset : headerNonceOffset+4])
 		}
 	}
 }
@@ -653,11 +637,7 @@ func solveShareNonce(t *testing.T, headerHex string, bitsHex string, ntime strin
 	if err != nil {
 		t.Fatal(err)
 	}
-	ntimeLE, err := reverseHexBytes(ntime)
-	if err != nil {
-		t.Fatal(err)
-	}
-	ntimeBytes, err := hex.DecodeString(ntimeLE)
+	ntimeBytes, err := hex.DecodeString(ntime)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -677,11 +657,7 @@ func solveShareNonce(t *testing.T, headerHex string, bitsHex string, ntime strin
 		hash := blake256.Sum256(header)
 		value := hashToBig(hash[:])
 		if value.Cmp(shareTarget) <= 0 && value.Cmp(networkTarget) > 0 {
-			nonceBE, err := reverseHexBytes(hex.EncodeToString(header[headerNonceOffset : headerNonceOffset+4]))
-			if err != nil {
-				t.Fatal(err)
-			}
-			return nonceBE
+			return hex.EncodeToString(header[headerNonceOffset : headerNonceOffset+4])
 		}
 	}
 }

@@ -24,6 +24,7 @@ func main() {
 	pacdataURL := flag.String("pacdata", "http://127.0.0.1:9609", "pacdata URL")
 	miningAddr := flag.String("miningaddr", "", "pool payout/mining address used for block template requests")
 	stratumListen := flag.String("stratumlisten", "127.0.0.1:3333", "Stratum TCP listen address")
+	stratumDebug := flag.Bool("stratumdebug", envBool("PACPOOL_STRATUM_DEBUG", false), "log Stratum JSON messages for compatibility debugging")
 	shareDiff := flag.Float64("sharedifficulty", 1, "base Stratum share difficulty")
 	varDiff := flag.Bool("vardiff", true, "enable per-worker variable difficulty")
 	varDiffTarget := flag.Duration("vardifftarget", 15*time.Second, "target time between accepted shares per worker")
@@ -96,13 +97,13 @@ func main() {
 	}()
 
 	if *miningAddr != "" {
-		stratumServer := stratum.New(*stratumListen, svc)
+		stratumServer := stratum.NewWithOptions(*stratumListen, svc, stratum.Options{Debug: *stratumDebug})
 		go func() {
 			if err := stratumServer.Run(ctx); err != nil {
 				exit(err)
 			}
 		}()
-		log.Printf("pacpool stratum listening on stratum+tcp://%s", *stratumListen)
+		log.Printf("pacpool stratum listening on stratum+tcp://%s debug=%t", *stratumListen, *stratumDebug)
 	}
 
 	errCh := make(chan error, 1)

@@ -34,6 +34,7 @@ type TemplateProvider interface {
 type Server struct {
 	listen string
 	svc    TemplateProvider
+	debug  bool
 
 	mu       sync.RWMutex
 	job      *Job
@@ -50,10 +51,10 @@ type Job struct {
 }
 
 const (
-	extraNonce1Size   = 4
-	extraNonce2Size   = 8
-	dr5ExtraNonceSize = extraNonce1Size + extraNonce2Size
-	minJobRefresh     = 30 * time.Second
+	extraNonce1Size        = 4
+	defaultExtraNonce2Size = 8
+	dr5ExtraNonce2Size     = 4
+	minJobRefresh          = 30 * time.Second
 
 	headerBitsOffset      = 116
 	headerHeightOffset    = 128
@@ -101,12 +102,22 @@ type session struct {
 	diffSent    bool
 	fixedDiff   bool
 	legacy      bool
+	dr5         bool
 }
 
 func New(listen string, svc TemplateProvider) *Server {
+	return NewWithOptions(listen, svc, Options{})
+}
+
+type Options struct {
+	Debug bool
+}
+
+func NewWithOptions(listen string, svc TemplateProvider, opts Options) *Server {
 	return &Server{
 		listen:   listen,
 		svc:      svc,
+		debug:    opts.Debug,
 		sessions: make(map[*session]struct{}),
 	}
 }
@@ -276,6 +287,7 @@ func (sess *session) run(ctx context.Context) {
 	reader := bufio.NewScanner(sess.conn)
 	reader.Buffer(make([]byte, 0, 4096), 1024*1024)
 	for reader.Scan() {
+		sess.logWire("recv", reader.Text())
 		var req request
 		if err := json.Unmarshal(reader.Bytes(), &req); err != nil {
 			_ = sess.sendResponse(response{ID: nil, Error: []any{20, "invalid json", nil}})
@@ -308,8 +320,10 @@ func (sess *session) handle(ctx context.Context, req request) error {
 		if len(req.Params) > 0 {
 			_ = json.Unmarshal(req.Params[0], &userAgent)
 		}
-		if strings.Contains(strings.ToLower(userAgent), "cgminer/4.9.0") {
+		userAgentLower := strings.ToLower(userAgent)
+		if strings.Contains(userAgentLower, "cgminer/4.9.0") {
 			sess.legacy = false
+			sess.dr5 = true
 		}
 		sess.subscribed = true
 		if sess.legacy {
@@ -327,8 +341,8 @@ func (sess *session) handle(ctx context.Context, req request) error {
 			ID: req.ID,
 			Result: []any{
 				[][]string{{"mining.set_difficulty", sess.sessionID}, {"mining.notify", sess.sessionID}},
-				strings.Repeat("0", extraNonce2Size*2) + sess.extraNonce1,
-				extraNonce2Size,
+				sess.subscribeExtraNonce1(),
+				sess.extraNonce2Size(),
 			},
 			Error: nil,
 		})
@@ -426,13 +440,14 @@ func (sess *session) handleSubmit(ctx context.Context, req request) error {
 		sess.server.svc.RecordShare(worker, false, false, "short template")
 		return sess.sendResponse(response{ID: req.ID, Result: false, Error: []any{20, "short template", nil}})
 	}
-	ntimeBytes, err := decodeUint32Hex(ntimeHex, true)
+	reverseSubmitWords := !sess.dr5
+	ntimeBytes, err := decodeUint32Hex(ntimeHex, reverseSubmitWords)
 	if err != nil {
 		sess.server.svc.RecordShare(worker, false, false, "invalid ntime")
 		return sess.sendResponse(response{ID: req.ID, Result: false, Error: []any{22, "invalid ntime", nil}})
 	}
 	ntime := binary.LittleEndian.Uint32(ntimeBytes)
-	nonceBytes, err := decodeUint32Hex(nonceHex, true)
+	nonceBytes, err := decodeUint32Hex(nonceHex, reverseSubmitWords)
 	if err != nil {
 		sess.server.svc.RecordShare(worker, false, false, "invalid nonce")
 		return sess.sendResponse(response{ID: req.ID, Result: false, Error: []any{22, "invalid nonce", nil}})
@@ -536,6 +551,19 @@ func (sess *session) sendNotify(job *Job, clean bool) error {
 			job.HeaderHex,
 		})
 	}
+	if sess.dr5 {
+		return sess.sendNotification("mining.notify", []any{
+			job.ID,
+			hex.EncodeToString(headerBytes[4:36]),
+			hex.EncodeToString(headerBytes[36:180]),
+			"",
+			[]string{},
+			hex.EncodeToString(headerBytes[0:4]),
+			hex.EncodeToString(headerBytes[headerBitsOffset : headerBitsOffset+4]),
+			hex.EncodeToString(headerBytes[headerTimestampOffset : headerTimestampOffset+4]),
+			clean,
+		})
+	}
 	prevBlock, err := reversePrevBlockWords(hex.EncodeToString(headerBytes[4:36]))
 	if err != nil {
 		return err
@@ -573,8 +601,37 @@ func (sess *session) sendJSON(v any) error {
 		return err
 	}
 	encoded = append(encoded, '\n')
+	sess.logWire("send", strings.TrimRight(string(encoded), "\n"))
 	_, err = sess.conn.Write(encoded)
 	return err
+}
+
+func (sess *session) extraNonce2Size() int {
+	if sess.dr5 {
+		return dr5ExtraNonce2Size
+	}
+	return defaultExtraNonce2Size
+}
+
+func (sess *session) subscribeExtraNonce1() string {
+	if sess.dr5 {
+		return sess.extraNonce1
+	}
+	return strings.Repeat("0", defaultExtraNonce2Size*2) + sess.extraNonce1
+}
+
+func (sess *session) logWire(direction string, line string) {
+	if !sess.server.debug {
+		return
+	}
+	line = strings.TrimSpace(line)
+	if line == "" {
+		return
+	}
+	if len(line) > 2000 {
+		line = line[:2000] + "...<truncated>"
+	}
+	log.Printf("pacpool stratum %s %s worker=%q dr5=%t legacy=%t %s", direction, sess.conn.RemoteAddr(), sess.worker, sess.dr5, sess.legacy, line)
 }
 
 func (sess *session) sendAccepted(id any, worker string, solved bool) error {
@@ -625,7 +682,7 @@ func submitExtraData(extraNonce1 string, submitted string) ([32]byte, error) {
 	if err != nil {
 		return extraData, fmt.Errorf("invalid extranonce")
 	}
-	if len(submittedBytes) == extraNonce2Size && extraNonce1 != "" {
+	if len(submittedBytes) == defaultExtraNonce2Size && extraNonce1 != "" {
 		suffix, err := hex.DecodeString(extraNonce1)
 		if err != nil {
 			return extraData, fmt.Errorf("invalid session extranonce")
