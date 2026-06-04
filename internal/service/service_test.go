@@ -278,13 +278,14 @@ func TestRecordShareUpdatesPoolAndWorkers(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	svc.RecordShare("miner.a", true, false, "")
+	svc.RecordShare("miner.a", true, false, "", 0)
 	current = current.Add(3 * time.Second)
-	svc.RecordShare("miner.a", false, false, "low difficulty share")
+	svc.RecordShare("miner.a", false, false, "low difficulty share", 0)
 	current = current.Add(3 * time.Second)
-	svc.RecordShare("miner.b", true, true, "")
+	svc.RecordShare("miner.b", true, true, "", 0)
 	current = current.Add(1 * time.Second)
-	svc.RecordShare("miner.a", true, false, "")
+	svc.RecordShare("miner.a", true, false, "", 0)
+	svc.SetStratumStats(2, 1, []string{"miner.a", "miner.b"})
 
 	snapshot := svc.Snapshot()
 	if snapshot.Pool.ShareDifficulty != 2.5 {
@@ -299,6 +300,9 @@ func TestRecordShareUpdatesPoolAndWorkers(t *testing.T) {
 	if snapshot.Pool.Workers[0].Name != "miner.a" || snapshot.Pool.Workers[0].Rejected != 1 || snapshot.Pool.Workers[0].Difficulty != 5 || snapshot.Pool.Workers[0].LastError != "" {
 		t.Fatalf("unexpected top worker: %+v", snapshot.Pool.Workers[0])
 	}
+	if snapshot.Pool.Workers[0].Hashrate <= 0 {
+		t.Fatalf("expected worker hashrate to be estimated: %+v", snapshot.Pool.Workers[0])
+	}
 	if snapshot.Pool.Workers[1].Name != "miner.b" || snapshot.Pool.Workers[1].SolvedBlocks != 1 {
 		t.Fatalf("unexpected second worker: %+v", snapshot.Pool.Workers[1])
 	}
@@ -307,6 +311,13 @@ func TestRecordShareUpdatesPoolAndWorkers(t *testing.T) {
 	}
 	if len(snapshot.Pool.CurrentRound.Workers) != 2 {
 		t.Fatalf("unexpected current round workers: %+v", snapshot.Pool.CurrentRound.Workers)
+	}
+	svc.SetStratumStats(0, 1, nil)
+	snapshot = svc.Snapshot()
+	for _, worker := range snapshot.Pool.Workers {
+		if worker.Hashrate != 0 {
+			t.Fatalf("offline worker kept current hashrate: %+v", worker)
+		}
 	}
 }
 
@@ -335,9 +346,9 @@ func TestSharePersistenceReloadsState(t *testing.T) {
 		t.Fatal(err)
 	}
 	svc.Refresh(context.Background())
-	svc.RecordShare("miner.persist", true, false, "")
+	svc.RecordShare("miner.persist", true, false, "", 0)
 	current = current.Add(20 * time.Second)
-	svc.RecordShare("miner.persist", false, false, "low difficulty share")
+	svc.RecordShare("miner.persist", false, false, "low difficulty share", 0)
 	current = current.Add(2 * time.Second)
 	svc.RecordSolvedBlock("miner.persist", 50, "persist50")
 
@@ -416,7 +427,7 @@ func TestSolvedBlockClosesRoundAndStartsNext(t *testing.T) {
 		t.Fatal(err)
 	}
 	svc.Refresh(context.Background())
-	svc.RecordShare("miner.round", true, true, "")
+	svc.RecordShare("miner.round", true, true, "", 0)
 	current = current.Add(2 * time.Second)
 	svc.RecordSolvedBlock("miner.round", 123, "abc123")
 
@@ -468,7 +479,7 @@ func TestTryAutoPayoutSendsAndMarksPaid(t *testing.T) {
 		t.Fatal(err)
 	}
 	svc.Refresh(context.Background())
-	svc.RecordShare("Pminer.worker1", true, true, "")
+	svc.RecordShare("Pminer.worker1", true, true, "", 0)
 	current = current.Add(time.Second)
 	svc.RecordSolvedBlock("Pminer.worker1", 200, "block200")
 
@@ -514,7 +525,7 @@ func TestEqualPayoutWindowMeansAllDay(t *testing.T) {
 		t.Fatal(err)
 	}
 	svc.Refresh(context.Background())
-	svc.RecordShare("Pminer.worker1", true, true, "")
+	svc.RecordShare("Pminer.worker1", true, true, "", 0)
 	current = current.Add(time.Second)
 	svc.RecordSolvedBlock("Pminer.worker1", 201, "block201")
 
@@ -554,13 +565,13 @@ func TestTryAutoPayoutLimitsBatchToSpendableBalance(t *testing.T) {
 		t.Fatal(err)
 	}
 	svc.Refresh(context.Background())
-	svc.RecordShare("Pbig.worker", true, true, "")
+	svc.RecordShare("Pbig.worker", true, true, "", 0)
 	current = current.Add(time.Second)
 	svc.RecordSolvedBlock("Pbig.worker", 300, "block300")
-	svc.RecordShare("Pbig.worker", true, true, "")
+	svc.RecordShare("Pbig.worker", true, true, "", 0)
 	current = current.Add(time.Second)
 	svc.RecordSolvedBlock("Pbig.worker", 301, "block301")
-	svc.RecordShare("Psmall.worker", true, true, "")
+	svc.RecordShare("Psmall.worker", true, true, "", 0)
 	current = current.Add(time.Second)
 	svc.RecordSolvedBlock("Psmall.worker", 302, "block302")
 
@@ -596,10 +607,10 @@ func TestPayoutStartHeightIgnoresLegacyUnpaidRounds(t *testing.T) {
 		t.Fatal(err)
 	}
 	svc.Refresh(context.Background())
-	svc.RecordShare("Plegacy.worker", true, true, "")
+	svc.RecordShare("Plegacy.worker", true, true, "", 0)
 	current = current.Add(time.Second)
 	svc.RecordSolvedBlock("Plegacy.worker", 778, "old-block")
-	svc.RecordShare("Pnew.worker", true, true, "")
+	svc.RecordShare("Pnew.worker", true, true, "", 0)
 	current = current.Add(time.Second)
 	svc.RecordSolvedBlock("Pnew.worker", 779, "new-block")
 
@@ -630,8 +641,8 @@ func TestPendingPayoutsAggregateByPayoutAddress(t *testing.T) {
 		t.Fatal(err)
 	}
 	svc.Refresh(context.Background())
-	svc.RecordShare("Pminer.rig1", true, false, "")
-	svc.RecordShare("Pminer.rig2", true, true, "")
+	svc.RecordShare("Pminer.rig1", true, false, "", 0)
+	svc.RecordShare("Pminer.rig2", true, true, "", 0)
 	current = current.Add(time.Second)
 	svc.RecordSolvedBlock("Pminer.rig2", 400, "block400")
 
@@ -662,7 +673,7 @@ func TestMinerStatsUsesPayoutAddressAndOnlineWorkers(t *testing.T) {
 		t.Fatal(err)
 	}
 	svc.Refresh(context.Background())
-	svc.RecordShare("Pminer.worker1", true, true, "")
+	svc.RecordShare("Pminer.worker1", true, true, "", 0)
 	current = current.Add(time.Second)
 	svc.RecordSolvedBlock("Pminer.worker1", 300, "block300")
 	svc.SetStratumStats(2, 1, []string{"Pminer.worker1", "Pminer.worker2"})

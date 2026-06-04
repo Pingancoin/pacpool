@@ -12,7 +12,10 @@ import (
 	"github.com/Pingancoin/pacpool/internal/upstream"
 )
 
-const coin = int64(100_000_000)
+const (
+	coin           = int64(100_000_000)
+	hashrateWindow = 2 * time.Minute
+)
 
 type PACDSource interface {
 	MiningInfo(context.Context) (upstream.MiningInfo, error)
@@ -117,7 +120,16 @@ type PoolState struct {
 	Payments          []PaymentRecord    `json:"payments,omitempty"`
 	AutoPayout        AutoPayoutState    `json:"auto_payout"`
 	RecentChainBlocks []ChainBlockRecord `json:"recent_chain_blocks,omitempty"`
+	Announcement      string             `json:"announcement,omitempty"`
+	Announcements     AnnouncementSet    `json:"announcements,omitempty"`
 	Notes             []string           `json:"notes"`
+}
+
+type AnnouncementSet struct {
+	ZhCN string `json:"zh_cn,omitempty"`
+	En   string `json:"en,omitempty"`
+	Ja   string `json:"ja,omitempty"`
+	Ko   string `json:"ko,omitempty"`
 }
 
 type AutoPayoutState struct {
@@ -160,6 +172,7 @@ type ShareState struct {
 type WorkerState struct {
 	Name           string    `json:"name"`
 	Difficulty     float64   `json:"difficulty"`
+	Hashrate       float64   `json:"hashrate"`
 	Accepted       uint64    `json:"accepted"`
 	AcceptedWork   float64   `json:"accepted_work"`
 	Rejected       uint64    `json:"rejected"`
@@ -169,6 +182,7 @@ type WorkerState struct {
 	LastError      string    `json:"last_error,omitempty"`
 	Online         bool      `json:"online"`
 	OnlineMachines int       `json:"online_machines,omitempty"`
+	hashrateWindow []shareSample
 }
 
 type RoundState struct {
@@ -189,6 +203,11 @@ type RoundState struct {
 	Paid           bool          `json:"paid"`
 	Payouts        []PayoutEntry `json:"payouts,omitempty"`
 	Workers        []RoundWorker `json:"workers,omitempty"`
+}
+
+type shareSample struct {
+	At   time.Time
+	Work float64
 }
 
 type RoundWorker struct {
@@ -286,16 +305,20 @@ type Options struct {
 }
 
 type AdminSettings struct {
-	AutoPayoutEnabled bool    `json:"auto_payout_enabled"`
-	FeeBPS            int     `json:"fee_bps"`
-	FeePercent        float64 `json:"fee_percent"`
-	PayoutMin         int64   `json:"payout_min"`
+	AutoPayoutEnabled bool            `json:"auto_payout_enabled"`
+	FeeBPS            int             `json:"fee_bps"`
+	FeePercent        float64         `json:"fee_percent"`
+	PayoutMin         int64           `json:"payout_min"`
+	Announcement      string          `json:"announcement,omitempty"`
+	Announcements     AnnouncementSet `json:"announcements,omitempty"`
 }
 
 type AdminSettingsUpdate struct {
 	AutoPayoutEnabled *bool
 	FeeBPS            *int
 	PayoutMin         *int64
+	Announcement      *string
+	Announcements     *AnnouncementSet
 }
 
 func New(pacd PACDSource, pacdata PACDataSource, opts Options) (*Service, error) {
@@ -649,6 +672,14 @@ func (s *Service) UpdateAdminSettings(update AdminSettingsUpdate) (AdminSettings
 		s.autoPayout = *update.AutoPayoutEnabled
 		s.state.Pool.AutoPayout.Enabled = s.autoPayout
 	}
+	if update.Announcement != nil {
+		s.state.Pool.Announcement = strings.TrimSpace(*update.Announcement)
+		s.state.Pool.Announcements.ZhCN = s.state.Pool.Announcement
+	}
+	if update.Announcements != nil {
+		s.state.Pool.Announcements = trimAnnouncementSet(*update.Announcements)
+		s.state.Pool.Announcement = s.state.Pool.Announcements.ZhCN
+	}
 	settings := s.adminSettingsLocked()
 	s.mu.Unlock()
 
@@ -659,11 +690,26 @@ func (s *Service) UpdateAdminSettings(update AdminSettingsUpdate) (AdminSettings
 }
 
 func (s *Service) adminSettingsLocked() AdminSettings {
+	announcements := s.state.Pool.Announcements
+	if announcements.ZhCN == "" {
+		announcements.ZhCN = s.state.Pool.Announcement
+	}
 	return AdminSettings{
 		AutoPayoutEnabled: s.autoPayout,
 		FeeBPS:            s.feeBPS,
 		FeePercent:        float64(s.feeBPS) / 100,
 		PayoutMin:         s.payoutMin,
+		Announcement:      announcements.ZhCN,
+		Announcements:     announcements,
+	}
+}
+
+func trimAnnouncementSet(announcements AnnouncementSet) AnnouncementSet {
+	return AnnouncementSet{
+		ZhCN: strings.TrimSpace(announcements.ZhCN),
+		En:   strings.TrimSpace(announcements.En),
+		Ja:   strings.TrimSpace(announcements.Ja),
+		Ko:   strings.TrimSpace(announcements.Ko),
 	}
 }
 
@@ -802,7 +848,7 @@ func (s *Service) SetStratumStats(connected int, jobs int, workerNames []string)
 	s.state.Pool.Workers = s.sortedWorkersLocked()
 }
 
-func (s *Service) RecordShare(worker string, accepted bool, solved bool, reason string) {
+func (s *Service) RecordShare(worker string, accepted bool, solved bool, reason string, shareWork float64) {
 	s.mu.Lock()
 
 	now := s.now().UTC()
@@ -818,11 +864,14 @@ func (s *Service) RecordShare(worker string, accepted bool, solved bool, reason 
 		s.workers[worker] = ws
 	}
 	ws.LastShareAt = now
-	shareWork := ws.Difficulty
+	if shareWork <= 0 {
+		shareWork = ws.Difficulty
+	}
 	if shareWork <= 0 {
 		shareWork = s.shareDiff
 	}
 	if accepted {
+		updateWorkerHashrate(ws, now, shareWork)
 		s.state.Pool.Shares.Accepted++
 		s.state.Pool.Shares.LastAcceptedAt = now
 		ws.Accepted++
@@ -865,15 +914,22 @@ func (s *Service) RecordShare(worker string, accepted bool, solved bool, reason 
 
 func (s *Service) sortedWorkersLocked() []WorkerState {
 	workers := make([]WorkerState, 0, len(s.workers))
+	now := s.now().UTC()
 	for _, worker := range s.workers {
 		clone := *worker
 		clone.OnlineMachines = s.onlineWorkers[clone.Name]
 		clone.Online = clone.OnlineMachines > 0
+		if !clone.Online || clone.LastAcceptedAt.IsZero() || now.Sub(clone.LastAcceptedAt) > 10*time.Minute {
+			clone.Hashrate = 0
+		}
 		workers = append(workers, clone)
 	}
 	sort.Slice(workers, func(i, j int) bool {
 		if workers[i].Online != workers[j].Online {
 			return workers[i].Online
+		}
+		if workers[i].Hashrate != workers[j].Hashrate {
+			return workers[i].Hashrate > workers[j].Hashrate
 		}
 		if workers[i].Difficulty != workers[j].Difficulty {
 			return workers[i].Difficulty > workers[j].Difficulty
@@ -890,6 +946,41 @@ func (s *Service) sortedWorkersLocked() []WorkerState {
 		return workers[i].Name < workers[j].Name
 	})
 	return workers
+}
+
+func updateWorkerHashrate(ws *WorkerState, now time.Time, shareWork float64) {
+	if ws == nil || shareWork <= 0 {
+		return
+	}
+	cutoff := now.Add(-hashrateWindow)
+	ws.hashrateWindow = append(ws.hashrateWindow, shareSample{At: now, Work: shareWork})
+	keep := 0
+	for _, sample := range ws.hashrateWindow {
+		if !sample.At.Before(cutoff) {
+			ws.hashrateWindow[keep] = sample
+			keep++
+		}
+	}
+	ws.hashrateWindow = ws.hashrateWindow[:keep]
+
+	if len(ws.hashrateWindow) < 2 {
+		if !ws.LastAcceptedAt.IsZero() {
+			elapsed := now.Sub(ws.LastAcceptedAt).Seconds()
+			if elapsed > 0 {
+				ws.Hashrate = shareWork * 4_294_967_296 / elapsed
+			}
+		}
+		return
+	}
+
+	var work float64
+	for _, sample := range ws.hashrateWindow {
+		work += sample.Work
+	}
+	elapsed := now.Sub(ws.hashrateWindow[0].At).Seconds()
+	if elapsed > 0 {
+		ws.Hashrate = work * 4_294_967_296 / elapsed
+	}
 }
 
 func (s *Service) WorkerDifficulty(worker string) float64 {

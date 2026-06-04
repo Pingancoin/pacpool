@@ -35,6 +35,7 @@ type dashboardCopy struct {
 	Workers           string
 	NoWorkers         string
 	Worker            string
+	Hashrate          string
 	Difficulty        string
 	Rejected          string
 	LastShare         string
@@ -129,6 +130,7 @@ type dashboardView struct {
 	MinerTotal     string
 	MinerToday     string
 	MinerLastPay   string
+	Announcement   string
 }
 
 var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.FuncMap{"timeText": timeText, "formatPAC": formatPAC, "shortText": shortText, "hasOnlineWorkers": hasOnlineWorkers}).Parse(`<!doctype html>
@@ -174,6 +176,31 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
     a { color: var(--accent-strong); text-decoration: none; }
     a:hover { text-decoration: underline; }
     .page { width: min(1180px, calc(100% - 32px)); margin: 0 auto; padding: 28px 0 44px; }
+    .announcement {
+      margin: 0 auto 16px;
+      max-width: min(920px, 100%);
+      overflow: hidden;
+      color: var(--text);
+      text-align: center;
+      -webkit-mask-image: linear-gradient(90deg, transparent, #000 14%, #000 86%, transparent);
+      mask-image: linear-gradient(90deg, transparent, #000 14%, #000 86%, transparent);
+    }
+    .announcement-text {
+      display: inline-block;
+      min-width: 100%;
+      padding: 2px 0;
+      color: var(--accent-strong);
+      font-weight: 700;
+      white-space: pre;
+      text-shadow: 0 0 18px rgba(46, 125, 91, .22);
+      animation: announcement-scroll 20s linear infinite;
+    }
+    @keyframes announcement-scroll {
+      0% { transform: translateX(100%); opacity: 0; }
+      8% { opacity: 1; }
+      92% { opacity: 1; }
+      100% { transform: translateX(-100%); opacity: 0; }
+    }
     header { display: grid; grid-template-columns: minmax(360px, 1fr) auto minmax(300px, .75fr); align-items: flex-start; gap: 28px; margin-bottom: 22px; }
     h1 { margin: 0 0 6px; font-size: clamp(28px, 5vw, 46px); line-height: 1.05; letter-spacing: 0; }
     .subtitle { margin: 0; color: var(--muted); max-width: 720px; font-size: 16px; }
@@ -295,6 +322,7 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
 </head>
 <body>
   <main class="page">
+    {{if .Announcement}}<section class="announcement"><span class="announcement-text">{{.Announcement}}</span></section>{{end}}
     <header>
       <div>
         <h1>{{.Copy.Title}}</h1>
@@ -428,7 +456,7 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
 </body>
 </html>`))
 
-var workersTemplate = template.Must(template.New("workers").Funcs(template.FuncMap{"timeText": timeText, "hasOnlineWorkers": hasOnlineWorkers}).Parse(`<!doctype html>
+var workersTemplate = template.Must(template.New("workers").Funcs(template.FuncMap{"timeText": timeText, "formatHashrate": formatHashrate, "hasOnlineWorkers": hasOnlineWorkers}).Parse(`<!doctype html>
 <html lang="{{.Copy.Lang}}">
 <head>
   <meta charset="utf-8">
@@ -478,11 +506,11 @@ var workersTemplate = template.Must(template.New("workers").Funcs(template.FuncM
     <section class="panel">
       {{if hasOnlineWorkers .Status.Pool.Workers}}
       <table>
-        <thead><tr><th>{{.Copy.Worker}}</th><th>{{.Copy.Difficulty}}</th><th>{{.Copy.Accepted}}</th><th>{{.Copy.Rejected}}</th><th>{{.Copy.LastShare}}</th></tr></thead>
+        <thead><tr><th>{{.Copy.Worker}}</th><th>{{.Copy.Hashrate}}</th><th>{{.Copy.Difficulty}}</th><th>{{.Copy.Accepted}}</th><th>{{.Copy.Rejected}}</th><th>{{.Copy.LastShare}}</th></tr></thead>
         <tbody>
         {{range .Status.Pool.Workers}}
           {{if .Online}}
-          <tr><td class="mono">{{.Name}}</td><td>{{printf "%.2f" .Difficulty}}</td><td>{{.Accepted}}</td><td>{{.Rejected}}</td><td>{{timeText .LastShareAt}}</td></tr>
+          <tr><td class="mono">{{.Name}}</td><td>{{formatHashrate .Hashrate}}</td><td>{{printf "%.2f" .Difficulty}}</td><td>{{.Accepted}}</td><td>{{.Rejected}}</td><td>{{timeText .LastShareAt}}</td></tr>
           {{end}}
         {{end}}
         </tbody>
@@ -648,9 +676,45 @@ func renderDashboard(w http.ResponseWriter, r *http.Request, svc *service.Servic
 		MinerTotal:     formatPAC(minerStats.Total),
 		MinerToday:     formatPAC(minerStats.TodayEarned),
 		MinerLastPay:   timeText(minerStats.LastPaymentAt),
+		Announcement:   localizedAnnouncement(status.Pool, copy.Lang),
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	return dashboardTemplate.Execute(w, view)
+}
+
+func localizedAnnouncement(pool service.PoolState, lang string) string {
+	announcements := pool.Announcements
+	if announcements.ZhCN == "" {
+		announcements.ZhCN = pool.Announcement
+	}
+	switch lang {
+	case "en":
+		if announcements.En != "" {
+			return announcements.En
+		}
+	case "ja":
+		if announcements.Ja != "" {
+			return announcements.Ja
+		}
+	case "ko":
+		if announcements.Ko != "" {
+			return announcements.Ko
+		}
+	case "zh-CN":
+		if announcements.ZhCN != "" {
+			return announcements.ZhCN
+		}
+	}
+	if announcements.ZhCN != "" {
+		return announcements.ZhCN
+	}
+	if announcements.En != "" {
+		return announcements.En
+	}
+	if announcements.Ja != "" {
+		return announcements.Ja
+	}
+	return announcements.Ko
 }
 
 func renderWorkers(w http.ResponseWriter, r *http.Request, svc *service.Service) error {
@@ -718,6 +782,7 @@ func dashboardCopyFor(lang string) dashboardCopy {
 		Workers:           "Workers",
 		NoWorkers:         "No connected workers yet.",
 		Worker:            "Worker",
+		Hashrate:          "Hashrate",
 		Difficulty:        "Difficulty",
 		Rejected:          "Rejected",
 		LastShare:         "Last share",
@@ -796,6 +861,7 @@ func dashboardCopyFor(lang string) dashboardCopy {
 		base.Workers = "矿工"
 		base.NoWorkers = "暂无矿工连接。"
 		base.Worker = "矿工"
+		base.Hashrate = "算力"
 		base.Difficulty = "难度"
 		base.Rejected = "拒绝"
 		base.LastShare = "最近份额"
@@ -868,6 +934,7 @@ func dashboardCopyFor(lang string) dashboardCopy {
 		base.Workers = "ワーカー"
 		base.NoWorkers = "接続中のワーカーはありません。"
 		base.Worker = "ワーカー"
+		base.Hashrate = "ハッシュレート"
 		base.Difficulty = "難易度"
 		base.Rejected = "拒否"
 		base.LastShare = "最終シェア"
@@ -940,6 +1007,7 @@ func dashboardCopyFor(lang string) dashboardCopy {
 		base.Workers = "워커"
 		base.NoWorkers = "연결된 워커가 없습니다."
 		base.Worker = "워커"
+		base.Hashrate = "해시레이트"
 		base.Difficulty = "난이도"
 		base.Rejected = "거부"
 		base.LastShare = "마지막 공유"
@@ -1106,6 +1174,13 @@ func formatNetworkHashrate(difficulty string, fallbackDifficulty string, spacing
 		}
 	}
 	hashrate := diff * 4_294_967_296 / float64(spacing)
+	return formatHashrate(hashrate)
+}
+
+func formatHashrate(hashrate float64) string {
+	if hashrate <= 0 {
+		return "-"
+	}
 	switch {
 	case hashrate >= 1e18:
 		return fmt.Sprintf("%.2f EH/s", hashrate/1e18)

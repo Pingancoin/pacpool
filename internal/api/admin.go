@@ -36,7 +36,8 @@ var adminTemplate = template.Must(template.New("admin").Parse(`<!doctype html>
     .panel { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:18px; }
     .grid { display:grid; gap:14px; }
     label { display:grid; gap:6px; color:var(--muted); font-size:13px; }
-    input { width:100%; min-height:38px; border:1px solid var(--line); border-radius:6px; padding:7px 10px; background:var(--panel); color:var(--text); font:inherit; }
+    input, textarea { width:100%; min-height:38px; border:1px solid var(--line); border-radius:6px; padding:7px 10px; background:var(--panel); color:var(--text); font:inherit; }
+    textarea { min-height:120px; resize:vertical; }
     .check { display:flex; align-items:center; gap:10px; color:var(--text); font-size:15px; }
     .check input { width:auto; min-height:auto; }
     button { min-height:38px; border:1px solid var(--accent); border-radius:6px; padding:7px 15px; background:var(--accent); color:#fff; font-weight:650; cursor:pointer; }
@@ -61,6 +62,18 @@ var adminTemplate = template.Must(template.New("admin").Parse(`<!doctype html>
       </label>
       <label>起付额度 PAC
         <input name="payout_min_pac" inputmode="decimal" value="{{.PayoutMinPAC}}">
+      </label>
+      <label>中文公告
+        <textarea name="announcement_zh_cn" maxlength="2000" placeholder="中文页面显示，留空则不显示公告">{{.Settings.Announcements.ZhCN}}</textarea>
+      </label>
+      <label>English notice
+        <textarea name="announcement_en" maxlength="2000" placeholder="Shown on English pages; falls back to Chinese when empty">{{.Settings.Announcements.En}}</textarea>
+      </label>
+      <label>日本語公告
+        <textarea name="announcement_ja" maxlength="2000" placeholder="日本語ページに表示。空欄の場合は中文公告に戻ります">{{.Settings.Announcements.Ja}}</textarea>
+      </label>
+      <label>한국어 공지
+        <textarea name="announcement_ko" maxlength="2000" placeholder="한국어 페이지에 표시됩니다. 비워두면 중국어 공지로 대체됩니다">{{.Settings.Announcements.Ko}}</textarea>
       </label>
       <div class="actions"><button type="submit">保存设置</button></div>
     </form>
@@ -145,10 +158,21 @@ func (s *Server) handleAdminSettings(w http.ResponseWriter, r *http.Request) {
 		redirectAdminError(w, r, err.Error())
 		return
 	}
+	announcements, err := parseAnnouncementSet(service.AnnouncementSet{
+		ZhCN: r.FormValue("announcement_zh_cn"),
+		En:   r.FormValue("announcement_en"),
+		Ja:   r.FormValue("announcement_ja"),
+		Ko:   r.FormValue("announcement_ko"),
+	})
+	if err != nil {
+		redirectAdminError(w, r, err.Error())
+		return
+	}
 	if _, err := s.service.UpdateAdminSettings(service.AdminSettingsUpdate{
 		AutoPayoutEnabled: &autoPayout,
 		FeeBPS:            &feeBPS,
 		PayoutMin:         &payoutMin,
+		Announcements:     &announcements,
 	}); err != nil {
 		redirectAdminError(w, r, err.Error())
 		return
@@ -215,6 +239,24 @@ func parseAdminPAC(value string) (int64, error) {
 func formatAdminPAC(atoms int64) string {
 	formatted := strings.TrimSuffix(strings.TrimSuffix(formatPAC(atoms), " PAC"), "0")
 	return strings.TrimSuffix(formatted, ".")
+}
+
+func parseAnnouncementSet(values service.AnnouncementSet) (service.AnnouncementSet, error) {
+	parsed := service.AnnouncementSet{
+		ZhCN: normalizeAnnouncement(values.ZhCN),
+		En:   normalizeAnnouncement(values.En),
+		Ja:   normalizeAnnouncement(values.Ja),
+		Ko:   normalizeAnnouncement(values.Ko),
+	}
+	if len([]rune(parsed.ZhCN)) > 2000 || len([]rune(parsed.En)) > 2000 ||
+		len([]rune(parsed.Ja)) > 2000 || len([]rune(parsed.Ko)) > 2000 {
+		return service.AnnouncementSet{}, fmt.Errorf("每条首页公告最多支持 2000 个字符")
+	}
+	return parsed, nil
+}
+
+func normalizeAnnouncement(value string) string {
+	return strings.TrimSpace(strings.ReplaceAll(value, "\r\n", "\n"))
 }
 
 func urlQueryEscape(value string) string {

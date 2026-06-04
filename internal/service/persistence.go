@@ -80,6 +80,11 @@ func (s *Service) loadRuntimeSettings() error {
 	s.state.Pool.FeePercent = float64(s.feeBPS) / 100
 	s.state.Pool.AutoPayout.Enabled = s.autoPayout
 	s.state.Pool.AutoPayout.MinAmount = s.payoutMin
+	s.state.Pool.Announcements = trimAnnouncementSet(settings.Announcements)
+	if s.state.Pool.Announcements.ZhCN == "" {
+		s.state.Pool.Announcements.ZhCN = strings.TrimSpace(settings.Announcement)
+	}
+	s.state.Pool.Announcement = s.state.Pool.Announcements.ZhCN
 	return nil
 }
 

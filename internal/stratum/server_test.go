@@ -59,7 +59,7 @@ func (f *fakeSvc) SetStratumStats(connected int, jobs int, workers []string) {
 	f.workers = append([]string(nil), workers...)
 }
 
-func (f *fakeSvc) RecordShare(worker string, accepted bool, solved bool, reason string) {
+func (f *fakeSvc) RecordShare(worker string, accepted bool, solved bool, reason string, shareWork float64) {
 	f.lastWorker = worker
 	f.lastReason = reason
 	if accepted {
@@ -739,6 +739,16 @@ func mustReversePrevBlockWords(t *testing.T, value string) string {
 		t.Fatal(err)
 	}
 	return reversed
+}
+
+func TestNormalizeLegacyDifficultyToDCRWork(t *testing.T) {
+	normalized := normalizeDifficultyToDCR(100_000_000, legacyDiffOneTarget)
+	if normalized <= 0.04 || normalized >= 0.05 {
+		t.Fatalf("legacy difficulty normalized to %v, want about 0.0465", normalized)
+	}
+	if got := normalizeDifficultyToDCR(1024, dcrDiffOneTarget); got != 1024 {
+		t.Fatalf("dcr difficulty normalized to %v, want unchanged", got)
+	}
 }
 
 func reverseBytes(value []byte) {

@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -94,7 +95,7 @@ func TestServerStatusAndHealth(t *testing.T) {
 		t.Fatal(err)
 	}
 	svc.Refresh(context.Background())
-	svc.RecordShare("worker.1", true, false, "")
+	svc.RecordShare("worker.1", true, false, "", 0)
 
 	server := httptest.NewServer(api.New(svc).Handler())
 	defer server.Close()
@@ -177,7 +178,16 @@ func TestAdminSettingsRequiresTokenAndUpdatesPool(t *testing.T) {
 	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error {
 		return http.ErrUseLastResponse
 	}}
-	reqBody := strings.NewReader("auto_payout=1&fee_percent=2.50&payout_min_pac=7.5&token=secret")
+	form := url.Values{}
+	form.Set("auto_payout", "1")
+	form.Set("fee_percent", "2.50")
+	form.Set("payout_min_pac", "7.5")
+	form.Set("announcement_zh_cn", "今日维护完成\n请使用新版矿机 <script>alert(1)</script>")
+	form.Set("announcement_en", "Maintenance complete\nPlease use the new miner")
+	form.Set("announcement_ja", "メンテナンス完了")
+	form.Set("announcement_ko", "점검 완료")
+	form.Set("token", "secret")
+	reqBody := strings.NewReader(form.Encode())
 	resp, err = client.Post(server.URL+"/admin/settings", "application/x-www-form-urlencoded", reqBody)
 	if err != nil {
 		t.Fatal(err)
@@ -190,6 +200,45 @@ func TestAdminSettingsRequiresTokenAndUpdatesPool(t *testing.T) {
 	status := svc.Snapshot()
 	if !status.Pool.AutoPayout.Enabled || status.Pool.FeePercent != 2.5 || status.Pool.AutoPayout.MinAmount != 750_000_000 {
 		t.Fatalf("settings not applied: %+v", status.Pool)
+	}
+	if status.Pool.Announcement != "今日维护完成\n请使用新版矿机 <script>alert(1)</script>" {
+		t.Fatalf("announcement not applied: %q", status.Pool.Announcement)
+	}
+	if status.Pool.Announcements.En != "Maintenance complete\nPlease use the new miner" ||
+		status.Pool.Announcements.Ja != "メンテナンス完了" ||
+		status.Pool.Announcements.Ko != "점검 완료" {
+		t.Fatalf("localized announcements not applied: %+v", status.Pool.Announcements)
+	}
+
+	resp, err = http.Get(server.URL + "/?lang=zh-CN")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(body)
+	if !strings.Contains(text, "今日维护完成") || !strings.Contains(text, "&lt;script&gt;alert(1)&lt;/script&gt;") {
+		t.Fatalf("dashboard did not render escaped announcement: %s", text)
+	}
+	if strings.Contains(text, "<script>alert(1)</script>") {
+		t.Fatalf("dashboard rendered announcement as raw script: %s", text)
+	}
+
+	resp, err = http.Get(server.URL + "/?lang=en")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	body, err = io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text = string(body)
+	if !strings.Contains(text, "Maintenance complete") || strings.Contains(text, "今日维护完成") {
+		t.Fatalf("dashboard did not render English announcement: %s", text)
 	}
 }
 
@@ -211,7 +260,7 @@ func TestPayoutExecute(t *testing.T) {
 		t.Fatal(err)
 	}
 	svc.Refresh(context.Background())
-	svc.RecordShare("worker.1", true, true, "")
+	svc.RecordShare("worker.1", true, true, "", 0)
 	svc.RecordSolvedBlock("worker.1", 21, "block21")
 
 	server := httptest.NewServer(api.New(svc).Handler())
@@ -259,7 +308,7 @@ func TestPayoutExecuteRequiresAdminTokenWhenConfigured(t *testing.T) {
 		t.Fatal(err)
 	}
 	svc.Refresh(context.Background())
-	svc.RecordShare("worker.1", true, true, "")
+	svc.RecordShare("worker.1", true, true, "", 0)
 	svc.RecordSolvedBlock("worker.1", 21, "block21")
 
 	server := httptest.NewServer(api.New(svc, api.Options{AdminToken: "secret"}).Handler())
@@ -309,7 +358,7 @@ func TestPayoutExecuteRequiresTxID(t *testing.T) {
 		t.Fatal(err)
 	}
 	svc.Refresh(context.Background())
-	svc.RecordShare("worker.1", true, true, "")
+	svc.RecordShare("worker.1", true, true, "", 0)
 	svc.RecordSolvedBlock("worker.1", 21, "block21")
 
 	server := httptest.NewServer(api.New(svc).Handler())
