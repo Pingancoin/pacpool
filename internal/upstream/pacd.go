@@ -56,6 +56,8 @@ type BlockTemplate struct {
 	Bits              string   `json:"bits"`
 	Difficulty        string   `json:"difficulty"`
 	Timestamp         int64    `json:"timestamp"`
+	MinTime           int64    `json:"mintime"`
+	MaxTime           int64    `json:"maxtime"`
 	TargetSpacingSec  int64    `json:"targetspacingsec"`
 	MempoolSize       int      `json:"mempoolsize"`
 	TotalFees         int64    `json:"totalfees"`

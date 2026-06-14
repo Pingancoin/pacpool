@@ -647,7 +647,7 @@ func renderDashboard(w http.ResponseWriter, r *http.Request, svc *service.Servic
 		Height:         fmt.Sprint(status.Network.BestHeight),
 		Peers:          fmt.Sprint(status.Network.PeerCount),
 		NetworkDiff:    formatDifficulty(status.PACD.Difficulty, status.Pool.Template.Difficulty),
-		NetworkHash:    formatNetworkHashrate(status.PACD.Difficulty, status.Pool.Template.Difficulty, status.Network.TargetSpacingSec, status.PACD.TargetSpacingSec),
+		NetworkHash:    formatHashrate(poolHashrate(status.Pool.Workers)),
 		Miners:         fmt.Sprint(status.Pool.ConnectedMiners),
 		Accepted:       fmt.Sprint(status.Pool.Shares.Accepted),
 		Rejected:       fmt.Sprint(status.Pool.Shares.Rejected),
@@ -769,7 +769,7 @@ func dashboardCopyFor(lang string) dashboardCopy {
 		Height:            "Height",
 		Peers:             "Peers",
 		NetworkDifficulty: "Network difficulty",
-		NetworkHashrate:   "Network hashrate",
+		NetworkHashrate:   "Pool hashrate",
 		Miners:            "Miners",
 		Accepted:          "Accepted",
 		Solved:            "Solved",
@@ -848,7 +848,7 @@ func dashboardCopyFor(lang string) dashboardCopy {
 		base.Height = "区块高度"
 		base.Peers = "节点连接"
 		base.NetworkDifficulty = "全网难度"
-		base.NetworkHashrate = "全网算力"
+		base.NetworkHashrate = "矿池算力"
 		base.Miners = "矿工数"
 		base.Accepted = "有效份额"
 		base.Solved = "已出块"
@@ -921,7 +921,7 @@ func dashboardCopyFor(lang string) dashboardCopy {
 		base.Height = "ブロック高"
 		base.Peers = "ピア"
 		base.NetworkDifficulty = "ネットワーク難易度"
-		base.NetworkHashrate = "ネットワークハッシュレート"
+		base.NetworkHashrate = "プールハッシュレート"
 		base.Miners = "マイナー"
 		base.Accepted = "承認シェア"
 		base.Solved = "発見ブロック"
@@ -994,7 +994,7 @@ func dashboardCopyFor(lang string) dashboardCopy {
 		base.Height = "블록 높이"
 		base.Peers = "피어"
 		base.NetworkDifficulty = "네트워크 난이도"
-		base.NetworkHashrate = "네트워크 해시레이트"
+		base.NetworkHashrate = "풀 해시레이트"
 		base.Miners = "채굴자"
 		base.Accepted = "승인 공유"
 		base.Solved = "발견 블록"
@@ -1175,6 +1175,16 @@ func formatNetworkHashrate(difficulty string, fallbackDifficulty string, spacing
 	}
 	hashrate := diff * 4_294_967_296 / float64(spacing)
 	return formatHashrate(hashrate)
+}
+
+func poolHashrate(workers []service.WorkerState) float64 {
+	var total float64
+	for _, worker := range workers {
+		if worker.Online && worker.Hashrate > 0 {
+			total += worker.Hashrate
+		}
+	}
+	return total
 }
 
 func formatHashrate(hashrate float64) string {

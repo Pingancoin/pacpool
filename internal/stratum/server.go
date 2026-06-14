@@ -229,6 +229,16 @@ func (s *Server) updateJob(template upstream.BlockTemplate) {
 }
 
 func buildJob(template upstream.BlockTemplate, timestamp uint32) (*Job, error) {
+	minTime := template.Timestamp
+	if template.MinTime > 0 {
+		minTime = template.MinTime
+	}
+	if int64(timestamp) < minTime {
+		timestamp = uint32(minTime)
+	}
+	if template.MaxTime > 0 && int64(timestamp) > template.MaxTime {
+		timestamp = uint32(template.MaxTime)
+	}
 	if int64(timestamp) < template.Timestamp {
 		timestamp = uint32(template.Timestamp)
 	}
@@ -502,9 +512,17 @@ func (sess *session) handleSubmit(ctx context.Context, req request) error {
 		sess.server.svc.RecordShare(worker, false, false, "invalid nonce", 0)
 		return sess.sendResponse(response{ID: req.ID, Result: false, Error: []any{22, "invalid nonce", nil}})
 	}
-	if int64(ntime) < job.Template.Timestamp {
+	minTime := job.Template.Timestamp
+	if job.Template.MinTime > 0 {
+		minTime = job.Template.MinTime
+	}
+	if int64(ntime) < minTime {
 		sess.server.svc.RecordShare(worker, false, false, "ntime before template", 0)
 		return sess.sendResponse(response{ID: req.ID, Result: false, Error: []any{23, "ntime before template", nil}})
+	}
+	if job.Template.MaxTime > 0 && int64(ntime) > job.Template.MaxTime {
+		sess.server.svc.RecordShare(worker, false, false, "ntime too far in future", 0)
+		return sess.sendResponse(response{ID: req.ID, Result: false, Error: []any{23, "ntime too far in future", nil}})
 	}
 	extraData, err := submitExtraData(sess.extraNonce1, extranonce2)
 	if err != nil {
