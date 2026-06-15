@@ -105,6 +105,8 @@ type session struct {
 	fixedDiff   bool
 	legacy      bool
 	dr5         bool
+	seenJob     string
+	seenShares  map[string]struct{}
 }
 
 func New(listen string, svc TemplateProvider) *Server {
@@ -486,6 +488,16 @@ func (sess *session) handleSubmit(ctx context.Context, req request) error {
 		sess.server.svc.RecordShare(worker, false, false, "stale job", 0)
 		return sess.sendResponse(response{ID: req.ID, Result: false, Error: []any{21, "stale job", nil}})
 	}
+	if sess.seenJob != jobID {
+		sess.seenJob = jobID
+		sess.seenShares = make(map[string]struct{})
+	}
+	shareKey := extranonce2 + ":" + ntimeHex + ":" + nonceHex
+	if _, exists := sess.seenShares[shareKey]; exists {
+		sess.server.svc.RecordShare(worker, false, false, "duplicate share", 0)
+		return sess.sendResponse(response{ID: req.ID, Result: false, Error: []any{22, "duplicate share", nil}})
+	}
+	sess.seenShares[shareKey] = struct{}{}
 	headerBytes, err := hex.DecodeString(job.HeaderHex)
 	if err != nil {
 		sess.server.svc.RecordShare(worker, false, false, "bad template header", 0)
