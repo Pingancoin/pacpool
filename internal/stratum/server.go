@@ -235,14 +235,15 @@ func buildJob(template upstream.BlockTemplate, timestamp uint32) (*Job, error) {
 	if template.MinTime > 0 {
 		minTime = template.MinTime
 	}
+	maxTime := template.MaxTime
+	if maxTime > 0 && minTime > maxTime {
+		minTime = maxTime
+	}
 	if int64(timestamp) < minTime {
 		timestamp = uint32(minTime)
 	}
-	if template.MaxTime > 0 && int64(timestamp) > template.MaxTime {
-		timestamp = uint32(template.MaxTime)
-	}
-	if int64(timestamp) < template.Timestamp {
-		timestamp = uint32(template.Timestamp)
+	if maxTime > 0 && int64(timestamp) > maxTime {
+		timestamp = uint32(maxTime)
 	}
 	headerBytes, err := hex.DecodeString(template.HeaderHex)
 	if err != nil {

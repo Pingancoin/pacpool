@@ -414,6 +414,44 @@ func TestLegacyPacminerNotifyUsesHeaderHexExtension(t *testing.T) {
 	}
 }
 
+func TestBuildJobClampsTemplateTimestampToMaxTime(t *testing.T) {
+	header := make([]byte, headerLength)
+	putHeaderFields(header, 0x207fffff, 1000, 21)
+	template := upstream.BlockTemplate{
+		Height:            21,
+		PreviousBlockHash: strings.Repeat("a", 64),
+		Bits:              "207fffff",
+		Timestamp:         1000,
+		MinTime:           900,
+		MaxTime:           950,
+		CoinbaseTxID:      strings.Repeat("b", 64),
+		HeaderHex:         hex.EncodeToString(header),
+		BlockHex:          hex.EncodeToString(append(append([]byte(nil), header...), 0x00)),
+	}
+
+	job, err := buildJob(template, 1000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	headerBytes, err := hex.DecodeString(job.HeaderHex)
+	if err != nil {
+		t.Fatal(err)
+	}
+	blockBytes, err := hex.DecodeString(job.BlockHex)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := job.Template.Timestamp; got != 950 {
+		t.Fatalf("job timestamp = %d, want max time 950", got)
+	}
+	if got := binary.LittleEndian.Uint32(headerBytes[headerTimestampOffset : headerTimestampOffset+4]); got != 950 {
+		t.Fatalf("header timestamp = %d, want max time 950", got)
+	}
+	if got := binary.LittleEndian.Uint32(blockBytes[headerTimestampOffset : headerTimestampOffset+4]); got != 950 {
+		t.Fatalf("block timestamp = %d, want max time 950", got)
+	}
+}
+
 func TestSuggestedDifficultySurvivesAuthorize(t *testing.T) {
 	template := upstream.BlockTemplate{
 		Height:            19,
