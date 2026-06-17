@@ -13,8 +13,9 @@ import (
 )
 
 const (
-	coin           = int64(100_000_000)
-	hashrateWindow = 2 * time.Minute
+	coin                   = int64(100_000_000)
+	defaultMaxRecentRounds = 10_000
+	hashrateWindow         = 2 * time.Minute
 )
 
 type PACDSource interface {
@@ -55,6 +56,7 @@ type Service struct {
 	payoutLocation    *time.Location
 	payoutBatchLimit  int
 	payoutStartHeight uint32
+	maxRecentRounds   int
 	now               func() time.Time
 
 	mu                     sync.RWMutex
@@ -300,6 +302,7 @@ type Options struct {
 	PayoutTimezone    string
 	PayoutBatchLimit  int
 	PayoutStartHeight uint32
+	MaxRecentRounds   int
 	PayoutSender      PayoutSender
 	Now               func() time.Time
 }
@@ -359,6 +362,9 @@ func New(pacd PACDSource, pacdata PACDataSource, opts Options) (*Service, error)
 	if opts.PayoutBatchLimit <= 0 {
 		opts.PayoutBatchLimit = 50
 	}
+	if opts.MaxRecentRounds <= 0 {
+		opts.MaxRecentRounds = defaultMaxRecentRounds
+	}
 	state := State{
 		Pool: PoolState{
 			Name:             "pacpool",
@@ -412,6 +418,7 @@ func New(pacd PACDSource, pacdata PACDataSource, opts Options) (*Service, error)
 		payoutLocation:         payoutLocation,
 		payoutBatchLimit:       opts.PayoutBatchLimit,
 		payoutStartHeight:      opts.PayoutStartHeight,
+		maxRecentRounds:        opts.MaxRecentRounds,
 		state:                  state,
 		workers:                make(map[string]*WorkerState),
 		onlineWorkers:          make(map[string]int),
@@ -1007,8 +1014,8 @@ func (s *Service) RecordSolvedBlock(worker string, height uint32, hash string) {
 	s.finalizeRoundPayoutLocked(&s.currentRound)
 	finished := cloneRoundState(s.currentRound)
 	s.recentRounds = append([]RoundState{finished}, s.recentRounds...)
-	if len(s.recentRounds) > 20 {
-		s.recentRounds = s.recentRounds[:20]
+	if s.maxRecentRounds > 0 && len(s.recentRounds) > s.maxRecentRounds {
+		s.recentRounds = s.recentRounds[:s.maxRecentRounds]
 	}
 	s.nextRoundID++
 	s.currentRound = s.newRoundLocked(now)

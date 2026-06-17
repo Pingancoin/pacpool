@@ -82,6 +82,24 @@ func (fakePACData) Transaction(context.Context, string) (upstream.IndexedTx, err
 	}, nil
 }
 
+type fakePayoutSender struct {
+	txid      string
+	payouts   []service.PayoutEntry
+	spendable int64
+}
+
+func (f *fakePayoutSender) SendPayouts(_ context.Context, payouts []service.PayoutEntry) (string, error) {
+	f.payouts = append([]service.PayoutEntry(nil), payouts...)
+	return f.txid, nil
+}
+
+func (f *fakePayoutSender) SpendableBalance(context.Context) (int64, error) {
+	if f.spendable > 0 {
+		return f.spendable, nil
+	}
+	return 1 << 60, nil
+}
+
 func TestServerStatusAndHealth(t *testing.T) {
 	svc, err := service.New(fakePACD{}, fakePACData{}, service.Options{
 		Interval:      time.Second,
@@ -372,6 +390,64 @@ func TestPayoutExecuteRequiresTxID(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("missing txid returned %s", resp.Status)
+	}
+}
+
+func TestPayoutAutoExecutesWalletPayout(t *testing.T) {
+	pacdTemplate := upstream.BlockTemplate{Height: 21}
+	pacdTemplate.NextSubsidy.Miner = 100
+	sender := &fakePayoutSender{txid: "wallet-tx"}
+	svc, err := service.New(fakePACD{
+		mining:   upstream.MiningInfo{Network: "simnet", Blocks: 20, NextHeight: 21},
+		network:  upstream.NetworkInfo{Network: "simnet", BestHeight: 20, BestBlockHash: "best"},
+		template: pacdTemplate,
+	}, fakePACData{}, service.Options{
+		Interval:          time.Second,
+		FeeBPS:            500,
+		MiningAddr:        "SminingAddr",
+		ShareDiff:         1,
+		AutoPayout:        true,
+		PayoutMin:         50,
+		PayoutWindowStart: "00:00",
+		PayoutWindowEnd:   "00:00",
+		PayoutSender:      sender,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc.Refresh(context.Background())
+	svc.RecordShare("worker.1", true, true, "", 0)
+	svc.RecordSolvedBlock("worker.1", 21, "block21")
+
+	server := httptest.NewServer(api.New(svc, api.Options{AdminToken: "secret"}).Handler())
+	defer server.Close()
+
+	req, err := http.NewRequest(http.MethodPost, server.URL+"/payouts/auto", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer secret")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("auto payout returned %s", resp.Status)
+	}
+	var result struct {
+		Executed bool                  `json:"executed"`
+		Payment  service.PaymentRecord `json:"payment"`
+		Status   service.PoolState     `json:"status"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		t.Fatal(err)
+	}
+	if !result.Executed || result.Payment.TxID != "wallet-tx" || len(sender.payouts) != 1 {
+		t.Fatalf("unexpected auto payout result=%+v sent=%+v", result, sender.payouts)
+	}
+	if len(result.Status.PendingPayouts) != 0 {
+		t.Fatalf("unexpected pending payouts after auto payout: %+v", result.Status.PendingPayouts)
 	}
 }
 

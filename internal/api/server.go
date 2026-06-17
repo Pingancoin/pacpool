@@ -39,6 +39,7 @@ func New(svc *service.Service, opts ...Options) *Server {
 	s.mux.HandleFunc("/admin/login", s.handleAdminLogin)
 	s.mux.HandleFunc("/admin/settings", s.handleAdminSettings)
 	s.mux.HandleFunc("/payouts", s.handlePayouts)
+	s.mux.HandleFunc("/payouts/auto", s.handlePayoutAuto)
 	s.mux.HandleFunc("/payouts/execute", s.handlePayoutExecute)
 	return s
 }
@@ -174,6 +175,27 @@ func (s *Server) handlePayoutExecute(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"executed": true,
+		"payment":  record,
+		"status":   s.service.Snapshot().Pool,
+	})
+}
+
+func (s *Server) handlePayoutAuto(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	if !s.authorizedAdmin(r) {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "admin token required"})
+		return
+	}
+	record, ok, err := s.service.TryAutoPayout(r.Context())
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"executed": ok,
 		"payment":  record,
 		"status":   s.service.Snapshot().Pool,
 	})

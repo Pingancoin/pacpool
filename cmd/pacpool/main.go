@@ -36,6 +36,7 @@ func main() {
 	payoutWalletURL := flag.String("payoutwallet", os.Getenv("PACPOOL_WALLET_URL"), "local pacwallet service URL used for automatic payouts")
 	payoutWalletToken := flag.String("payoutwallettoken", os.Getenv("PACPOOL_WALLET_TOKEN"), "optional token sent to the local wallet service")
 	payoutPassphrase := flag.String("payoutpassphrase", os.Getenv("PACPOOL_WALLET_PASSPHRASE"), "optional wallet passphrase for automatic payouts")
+	payoutWalletTimeout := flag.Duration("payoutwallettimeout", envDuration("PACPOOL_WALLET_TIMEOUT", 5*time.Minute), "timeout for local wallet payout requests")
 	payoutFee := flag.String("payoutfee", envString("PACPOOL_PAYOUT_FEE", "0.0001"), "wallet transaction fee for automatic payout batches")
 	payoutMin := flag.Int64("payoutminatoms", envInt64("PACPOOL_PAYOUT_MIN_ATOMS", 0), "minimum total pending payout atoms before automatic payout")
 	payoutEvery := flag.Duration("payoutevery", envDuration("PACPOOL_PAYOUT_INTERVAL", time.Hour), "automatic payout interval")
@@ -44,6 +45,7 @@ func main() {
 	payoutTimezone := flag.String("payouttimezone", envString("PACPOOL_PAYOUT_TIMEZONE", "Asia/Shanghai"), "automatic payout window timezone")
 	payoutBatchLimit := flag.Int("payoutbatchlimit", envInt("PACPOOL_PAYOUT_BATCH_LIMIT", 50), "maximum miner payouts per automatic payout batch")
 	payoutStartHeight := flag.Uint("payoutstartheight", uint(envInt("PACPOOL_PAYOUT_START_HEIGHT", 0)), "ignore unpaid rounds below this block height for automatic payout accounting")
+	maxRecentRounds := flag.Int("maxrecentrounds", envInt("PACPOOL_MAX_RECENT_ROUNDS", 10000), "maximum solved rounds kept for payout accounting and dashboard history")
 	flag.Parse()
 
 	var payoutSender service.PayoutSender
@@ -53,6 +55,7 @@ func main() {
 			Token:      *payoutWalletToken,
 			Passphrase: *payoutPassphrase,
 			Fee:        *payoutFee,
+			Timeout:    *payoutWalletTimeout,
 		})
 		if err != nil {
 			exit(err)
@@ -76,6 +79,7 @@ func main() {
 		PayoutTimezone:    *payoutTimezone,
 		PayoutBatchLimit:  *payoutBatchLimit,
 		PayoutStartHeight: uint32(*payoutStartHeight),
+		MaxRecentRounds:   *maxRecentRounds,
 		PayoutSender:      payoutSender,
 	})
 	if err != nil {

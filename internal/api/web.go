@@ -631,6 +631,9 @@ func renderDashboard(w http.ResponseWriter, r *http.Request, svc *service.Servic
 	lang := dashboardLang(r)
 	copy := dashboardCopyFor(lang)
 	status := svc.Snapshot()
+	if len(status.Pool.Payments) > 8 {
+		status.Pool.Payments = status.Pool.Payments[:8]
+	}
 	minerQuery := strings.TrimSpace(r.URL.Query().Get("miner"))
 	minerStats, minerFound := service.MinerStats{}, false
 	if minerQuery != "" {
