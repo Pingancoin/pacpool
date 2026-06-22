@@ -12,6 +12,8 @@ type Options struct {
 	AdminToken string
 }
 
+const maxStatusRecentRounds = 100
+
 type Server struct {
 	service    *service.Service
 	mux        *http.ServeMux
@@ -100,7 +102,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, s.service.Snapshot())
+	writeJSON(w, http.StatusOK, trimStatusSnapshot(s.service.Snapshot()))
 }
 
 func (s *Server) handleRecentChainBlocks(w http.ResponseWriter, r *http.Request) {
@@ -254,4 +256,11 @@ func writeJSON(w http.ResponseWriter, status int, value any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(value)
+}
+
+func trimStatusSnapshot(status service.State) service.State {
+	if len(status.Pool.RecentRounds) > maxStatusRecentRounds {
+		status.Pool.RecentRounds = status.Pool.RecentRounds[:maxStatusRecentRounds]
+	}
+	return status
 }
